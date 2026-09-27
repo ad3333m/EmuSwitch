@@ -7,11 +7,18 @@ ROOT="$(pwd)"
 JOBS="$(nproc)"
 git config --global --add safe.directory '*'
 
-# 1. devkitPro packages, fully up to date.
-dkp-pacman -Syu --noconfirm
-dkp-pacman -S --noconfirm --needed \
-    switch-dev switch-freetype switch-bzip2 switch-libpng switch-zlib switch-curl \
-    switch-ntfs-3g switch-lwext4
+# 1. devkitPro packages. The image already carries the Switch portlibs; pkg.devkitpro.org
+#    sometimes refuses CI runners (403), so updating is best-effort.
+if dkp-pacman -Syu --noconfirm; then
+    dkp-pacman -S --noconfirm --needed \
+        switch-dev switch-freetype switch-bzip2 switch-libpng switch-zlib switch-curl \
+        switch-ntfs-3g switch-lwext4 || true
+else
+    echo "::warning::pkg.devkitpro.org unreachable, building with the image's packages"
+fi
+for lib in libfreetype.a libbz2.a libpng.a libz.a libcurl.a; do
+    test -f "$DEVKITPRO/portlibs/switch/lib/$lib" || { echo "missing portlib $lib"; exit 1; }
+done
 
 # 2. libnx from master. The last tagged release (4.11.1) predates the 22.x firmware fixes.
 LIBNX_REF="${LIBNX_REF:-master}"
