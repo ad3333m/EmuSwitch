@@ -140,18 +140,29 @@ std::map<std::string, std::string> ListPictures(const char* sub) {
     return out;
 }
 
+// Titles installed on the emulated SD card are told apart by their title ID: their files all
+// have the same few names.
+std::string CoverStem(const GameEntry& game) {
+    if (game.installed && game.program_id != 0) {
+        char id[20];
+        std::snprintf(id, sizeof(id), "%016llx", static_cast<unsigned long long>(game.program_id));
+        return id;
+    }
+    return Stem(game.path);
+}
+
 std::string GamePathWith(const GameEntry& game, const std::map<std::string, std::string>* covers) {
     ReadConfig();
     const auto it = s_game_paths.find(game.path);
     if (it != s_game_paths.end() && Exists(it->second)) return it->second;
     if (covers) {
-        if (auto c = covers->find(Lower(Stem(game.path))); c != covers->end()) return c->second;
+        if (auto c = covers->find(Lower(CoverStem(game))); c != covers->end()) return c->second;
         if (!game.title.empty()) {
             if (auto c = covers->find(Lower(game.title)); c != covers->end()) return c->second;
         }
         return "";
     }
-    std::string p = DropIn("covers", Stem(game.path));
+    std::string p = DropIn("covers", CoverStem(game));
     if (p.empty() && !game.title.empty()) p = DropIn("covers", game.title);
     return p;
 }
@@ -337,6 +348,44 @@ std::string g_preview_want;
 bool g_preview_ready = false;
 Done g_preview;
 
+// Makes a console logo read on the dark menu: a white background becomes see-through, then
+// black and dark grey lettering turns light. Coloured parts, and anything already light, stay as
+// they are, so a logo that was made for a dark background comes through unchanged.
+void ForDarkMenu(Gfx::Image& img) {
+    if (img.Empty()) return;
+    // Mostly solid pixels means the logo sits on a background, taken to be white.
+    std::size_t solid = 0;
+    for (const Gfx::u32 p : img.px) solid += (p >> 24) >= 250 ? 1 : 0;
+    const bool on_white = solid > img.px.size() * 9 / 10;
+    for (Gfx::u32& p : img.px) {
+        int r = p & 0xFF, g = (p >> 8) & 0xFF, b = (p >> 16) & 0xFF, a = p >> 24;
+        if (on_white) {
+            // Colour to alpha against white: the least white channel sets the opacity.
+            const int k = 255 - std::min({r, g, b});
+            if (k == 0) {
+                p = 0;
+                continue;
+            }
+            r = std::clamp(255 - (255 - r) * 255 / k, 0, 255);
+            g = std::clamp(255 - (255 - g) * 255 / k, 0, 255);
+            b = std::clamp(255 - (255 - b) * 255 / k, 0, 255);
+            a = a * k / 255;
+        }
+        if (a == 0) {
+            p = 0;
+            continue;
+        }
+        // Greys up to mid-light (the Wii U's "Wii", say) end up light too; anything lighter was
+        // already made for a dark background.
+        const int lum = (r * 299 + g * 587 + b * 114) / 1000;
+        if (std::max({r, g, b}) - std::min({r, g, b}) < 60 && lum < 180) {
+            r = g = b = 255 - lum * 32 / 100;
+        }
+        p = Gfx::u32(r) | (Gfx::u32(g) << 8) | (Gfx::u32(b) << 16) | (Gfx::u32(a) << 24);
+    }
+    img.opaque = false;
+}
+
 void Settle(const std::string& key, const std::string& stamp) {
     std::lock_guard lock{g_mutex};
     const std::string prefix = key + "\n";
@@ -366,6 +415,9 @@ void Loader() {
             done.error = Decode(job.path, kSystemFit, false, done.img);
         } else if (job.kind == kLogoJob) {
             done.error = Decode(job.path, Fit{kLogoSide, kLogoSide}, true, done.img);
+            if (done.error.empty()) {
+                ForDarkMenu(done.img);
+            }
         } else {
             done.error = Decode(job.path, kGameFit, false, done.img);
         }
@@ -419,6 +471,12 @@ std::string SystemArtPath(const std::string& id) {
 
 std::string GameArtPath(const GameEntry& game) {
     return GamePathWith(game, nullptr);
+}
+
+bool HasPickedArt(const GameEntry& game) {
+    ReadConfig();
+    const auto it = s_game_paths.find(game.path);
+    return it != s_game_paths.end() && Exists(it->second);
 }
 
 std::string LoadProfile() {
@@ -502,8 +560,14 @@ void LoadSystemArt() {
             path = l->second;
         }
         want(kSystemJob, sys.id, path);
+        // A logo put in the logos folder wins over the one that comes with EmuSwitch.
         const auto logo = logos.find(Lower(sys.id));
-        want(kLogoJob, sys.id, logo != logos.end() ? logo->second : std::string{});
+        std::string logo_path = logo != logos.end() ? logo->second : std::string{};
+        if (logo_path.empty()) {
+            const std::string built_in = "romfs:/logos/" + sys.id + ".png";
+            if (Exists(built_in)) logo_path = built_in;
+        }
+        want(kLogoJob, sys.id, logo_path);
     }
     if (jobs.empty()) return;
     std::lock_guard lock{g_mutex};

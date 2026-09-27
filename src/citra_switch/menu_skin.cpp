@@ -1230,7 +1230,7 @@ void DrawSystemsCarousel(Canvas& c, const Fonts& f, const std::vector<SystemCard
 int DrawSystemLogo(Canvas& c, const Fonts& f, const SystemCard& card, int x, int y, int h) {
     if (auto logo = Find(g_logo_pics, card.id)) {
         // A logo keeps its shape: as tall as the band, as wide as that makes it (within reason).
-        const float k = std::min(float(h) / logo->img.h, 280.0f / logo->img.w);
+        const float k = std::min(float(h) / logo->img.h, 340.0f / logo->img.w);
         const int w = std::max(1, static_cast<int>(std::lround(logo->img.w * k)));
         const int lh = std::max(1, static_cast<int>(std::lround(logo->img.h * k)));
         const auto img = Cached(Key({13, logo->id, u64(w), u64(lh)}), true, [&] { return Gfx::Resize(logo->img, w, lh); });

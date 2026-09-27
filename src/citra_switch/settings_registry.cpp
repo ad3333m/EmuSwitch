@@ -1067,6 +1067,11 @@ void BuildLayout(std::vector<SettingEntry>& out) {
 
     // Last on the page, where it's easy to find.
     t.Group("Pictures");
+    t << LocalBool("download_covers",
+                   {"Download Box Art",
+                    "Gets box art for games without a picture from the libretro thumbnail library "
+                    "while online."},
+                   IsCoverDownloadEnabled, SetCoverDownloadEnabled, true);
     t << LocalBool("picture_buttons",
                    {"Picture Options",
                     "Shows the options for adding and changing the pictures of consoles and games. "

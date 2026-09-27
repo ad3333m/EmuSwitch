@@ -83,6 +83,10 @@ void SetMenuInputRotated(bool enabled);
 bool IsPictureEditingEnabled();
 void SetPictureEditingEnabled(bool enabled);
 
+// Whether box art is downloaded for games that have no picture.
+bool IsCoverDownloadEnabled();
+void SetCoverDownloadEnabled(bool enabled);
+
 // The order of the consoles on the Systems page and the Home sections, as comma-separated ids
 // ("3ds,ds,gba,..."); empty for the default order.
 std::string GetSystemsOrder();

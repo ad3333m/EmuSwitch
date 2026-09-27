@@ -328,19 +328,8 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 6; ++i) Frame(c, 12.0, [&](Canvas& v) { home(v, 5, false, 1.3f, 1.0f, 1.0f, 150.0f); });
     SavePng(c, out + "/home_scrolled.png");
     {
-        // A stand-in logo (a wide wordmark with transparency), the way a PNG logo would arrive.
-        Canvas logo;
-        logo.Resize(520, 120);
-        logo.Clear(MakeColor(0, 0, 0));
-        bold.Draw(logo, 10, 92, "EXAMPLE", 96, MakeColor(0xFF, 0xFF, 0xFF));
-        Image img;
-        img.w = 520;
-        img.h = 120;
-        img.px.resize(520 * 120);
-        for (std::size_t k = 0; k < img.px.size(); ++k) {
-            // White-on-black coverage becomes the alpha of a red wordmark.
-            img.px[k] = MakeColor(0xE8, 0x10, 0x2A, static_cast<u8>(logo.Data()[k] & 0xFF));
-        }
+        // The logo EmuSwitch ships for the 3DS section (the app loads it from the romfs).
+        Image img = LoadPng(std::string{argc > 4 ? argv[4] : "src/citra_switch/assets/logos/3ds.png"});
         img.opaque = false;
         Skin::SetSystemLogo("3ds", std::move(img));
         for (int i = 0; i < 6; ++i) Frame(c, 12.5, [&](Canvas& v) { home(v, 5, false, 1.3f, 1.0f, 1.0f); });

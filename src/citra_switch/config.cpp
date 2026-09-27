@@ -74,6 +74,7 @@ SwitchFrontend::CameraTarget s_camera_target = SwitchFrontend::CameraTarget::All
 int s_menu_rotation = 0;
 bool s_menu_input_rotated = false;
 bool s_picture_editing = true;
+bool s_cover_download = true;
 std::string s_systems_order;
 int s_ds_screen_layout = 0;
 int s_ds_screen_gap = 0;
@@ -568,6 +569,14 @@ bool IsPictureEditingEnabled() {
 
 void SetPictureEditingEnabled(bool enabled) {
     s_picture_editing = enabled;
+}
+
+bool IsCoverDownloadEnabled() {
+    return s_cover_download;
+}
+
+void SetCoverDownloadEnabled(bool enabled) {
+    s_cover_download = enabled;
 }
 
 std::string GetSystemsOrder() {

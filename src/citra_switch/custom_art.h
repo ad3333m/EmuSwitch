@@ -30,6 +30,8 @@ bool IsImageFile(const std::string& name);
 // Where a system's / game's picture comes from, or empty for the default.
 std::string SystemArtPath(const std::string& id);
 std::string GameArtPath(const GameEntry& game);
+// Whether the player picked a picture for the game (in the menu, rather than a file in covers/).
+bool HasPickedArt(const GameEntry& game);
 
 // The console user's nickname; their avatar goes to the skin's profile bar.
 std::string LoadProfile();

@@ -63,6 +63,10 @@ core pcsx_rearmed ps1
 core ppsspp psp
 ls -la "$EMUS"
 
+# Console logos for the Home screen's section headers.
+mkdir -p "$ROOT/dist/emuswitch-romfs/logos"
+cp "$ROOT"/src/citra_switch/assets/logos/*.png "$ROOT/dist/emuswitch-romfs/logos/"
+
 # The menu's font: Inter (SIL Open Font License), in the romfs next to the emulators.
 FONTS="$ROOT/dist/emuswitch-romfs/fonts"
 mkdir -p "$FONTS"

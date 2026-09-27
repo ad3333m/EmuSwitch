@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "citra_switch/config.h"
+#include "citra_switch/cover_fetch.h"
 #include "citra_switch/custom_art.h"
 #include "citra_switch/input.h"
 #include "citra_switch/menu.h"
@@ -269,6 +270,8 @@ bool g_notice_is_error = true;
 bool g_auto_update_checked = false;
 // CIA files are looked for once per session, when the menu first opens (and on a refresh).
 bool g_auto_install_checked = false;
+// Likewise box art for games without a picture.
+bool g_covers_checked = false;
 
 // ~4 seconds at 60fps.
 constexpr int kNoticeFrames = 240;
@@ -872,6 +875,10 @@ public:
             g_auto_install_checked = true;
             StartAutoInstall();
         }
+        if (!g_covers_checked) {
+            g_covers_checked = true;
+            StartCoverDownload();
+        }
         if (!g_auto_update_checked) {
             g_auto_update_checked = true;
             ShowStartupCard();
@@ -884,6 +891,7 @@ public:
             held = padGetButtons(&pad);
             PumpUpdater();
             PumpInstall();
+            PumpCovers();
 
             if (!install_active && ConsumeUsbStorageChange()) {
                 HandleUsbStorageChange();
@@ -1171,6 +1179,7 @@ private:
     std::string install_last_ok;
     std::vector<std::pair<std::string, std::string>> install_failures; // path, message
     bool install_active = false;
+    double covers_polled = 0.0;
     std::set<std::string> install_skip; // CIAs that failed this session aren't tried again
     // What the progress pill shows, sampled in PrepareFrame().
     std::string install_label;
@@ -1507,6 +1516,7 @@ private:
             search.clear();
             Rescan();
             StartAutoInstall();
+            StartCoverDownload();
         }
         if (down & HidNpadButton_B) {
             EnterRail();
@@ -1749,6 +1759,37 @@ private:
 
     void NoticeInstallBusy(const char* what) {
         ShowNotice("Installing " + InstallingName() + " - you can " + what + " once it's done", true);
+    }
+
+    // Box art for the games without a picture, downloaded in the background; tiles pick the
+    // covers up as they arrive.
+    void StartCoverDownload() {
+        if (!IsCoverDownloadEnabled() || Covers::IsRunning()) {
+            return;
+        }
+        std::vector<Covers::Request> requests;
+        for (const GameEntry& game : games) {
+            Covers::Request request;
+            if (Covers::RequestFor(game, request)) {
+                requests.push_back(std::move(request));
+            }
+        }
+        Covers::Start(std::move(requests));
+    }
+
+    void PumpCovers() {
+        const double now = NowSeconds();
+        if (now - covers_polled < 2.0) {
+            return;
+        }
+        covers_polled = now;
+        if (Covers::TakeUpdates()) {
+            Art::LoadGameArt(games);
+        }
+        if (const int added = Covers::TakeFinishedCount(); added > 0) {
+            ShowNotice(std::to_string(added) + (added == 1 ? " box art picture added" : " box art pictures added"),
+                       false);
+        }
     }
 
     // Move the cursor out to the Library/Settings rail
@@ -4567,6 +4608,7 @@ MenuResult RunMenu(PadState& pad) {
     }
     // Whatever is still loading can wait: the game gets the cores.
     Art::StopLoading();
+    Covers::Stop();
     return result;
 }
 
@@ -4603,6 +4645,7 @@ void SetMenuNotice(const std::string& text, bool error) {
 }
 
 void ShutdownMenu() {
+    Covers::Stop();
     Workers::Get().Shutdown();
     Skin::TrimCaches();
     g_font.Shutdown();
