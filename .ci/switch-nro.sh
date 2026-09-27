@@ -29,13 +29,10 @@ if [ ! -d externals/nxvk/.git ]; then
 fi
 # NXVK's rust cross-file and rustc wrapper expect its tree at /work/switch.
 ln -sfn "$ROOT/externals/nxvk/switch" /work/switch
-(
-    cd externals/nxvk
-    bash switch/build/build-native-tools.sh
-    bash switch/build/configure-mesa.sh
-    ninja -k0 -C switch/build/cross src/nouveau/vulkan/libvulkan_nouveau.so || true
-    test -f switch/build/cross/src/nouveau/vulkan/libnvk.a
-)
+# Its Makefile chains native tools -> Rust std sysroot -> configure -> driver archives.
+# CONTAINER= runs each step directly, since we're already inside the toolchain image.
+make -C externals/nxvk driver CONTAINER=
+test -f externals/nxvk/switch/build/cross/src/nouveau/vulkan/libnvk.a
 
 # 4. Dekopon itself.
 cmake -S . -B build/switch \
