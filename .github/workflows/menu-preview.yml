@@ -1,0 +1,39 @@
+name: menu-preview
+
+# Renders EmuSwitch's menu skin to PNGs on Linux (about a minute), so the look can be
+# reviewed without building the whole Switch app.
+on:
+  push:
+    branches: [ "ui-*" ]
+    paths:
+      - "src/citra_switch/menu_gfx.h"
+      - "src/citra_switch/menu_skin.*"
+      - "src/citra_switch/rail_icons.h"
+      - "tools/menu_preview/**"
+      - ".github/workflows/menu-preview.yml"
+  workflow_dispatch:
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Dependencies
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libfreetype-dev >/dev/null
+          curl -fsSL -o tools/menu_preview/stb_image_write.h https://raw.githubusercontent.com/nothings/stb/master/stb_image_write.h
+          curl -fsSL -o /tmp/inter.zip https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip
+          mkdir -p fonts
+          unzip -j -o -q /tmp/inter.zip "extras/ttf/Inter-Medium.ttf" "extras/ttf/Inter-Bold.ttf" "extras/ttf/Inter-BlackItalic.ttf" -d fonts
+          ls fonts
+      - name: Build
+        run: |
+          g++ -std=c++20 -O2 -Wall -Isrc -Itools/menu_preview $(pkg-config --cflags freetype2) \
+            tools/menu_preview/preview.cpp src/citra_switch/menu_skin.cpp \
+            $(pkg-config --libs freetype2) -o preview
+      - name: Render
+        run: mkdir -p out && ./preview fonts out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: menu-preview
+          path: out/*.png
