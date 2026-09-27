@@ -35,6 +35,13 @@ jobs:
         with:
           name: dekopon-nro
           path: artifacts/dekopon.nro
+      - name: Publish nightly
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view nightly --repo "${{ github.repository }}" >/dev/null 2>&1 ||             gh release create nightly --repo "${{ github.repository }}" --prerelease --title "Nightly"               --notes "Latest master build, rebuilt against libnx master for HOS 22.5.0."
+          gh release upload nightly artifacts/dekopon.nro --clobber --repo "${{ github.repository }}"
       - name: Publish release
         if: github.ref_type == 'tag'
         env:
