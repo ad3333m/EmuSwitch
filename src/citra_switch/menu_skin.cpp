@@ -140,8 +140,10 @@ Grid ComputeGrid(int screen_w, int screen_h) {
     g.cols = std::max(1, (avail + kTileGap) / (kTileW + kTileGap));
     const int used = g.cols * kTileW + (g.cols - 1) * kTileGap;
     g.start_x = kContentX + 32 + (avail - used) / 2;
-    g.top = kContentTop + 12;
-    g.visible_rows = std::max(1, (screen_h - kHintH - g.top) / (kTileH + kTileGap));
+    const int avail_h = screen_h - kHintH - kContentTop;
+    g.visible_rows = std::max(1, (avail_h - 12 + kTileGap) / (kTileH + kTileGap));
+    const int grid_h = g.visible_rows * (kTileH + kTileGap) - kTileGap;
+    g.top = kContentTop + std::max(8, (avail_h - grid_h) / 2 - 6);
     return g;
 }
 

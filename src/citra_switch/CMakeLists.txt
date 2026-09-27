@@ -36,11 +36,18 @@ add_executable(citra_switch
     menu.cpp
     menu.h
     menu_data.cpp
+    custom_art.cpp
+    custom_art.h
+    menu_gfx.h
+    menu_skin.cpp
+    menu_skin.h
     multi_handoff.cpp
     multi_system.cpp
     multi_system.h
     emu_zip.cpp
     emu_zip.h
+    simplewebp.h
+    simplewebp_impl.c
     menu_data.h
     overlay_menu.cpp
     overlay_menu.h

@@ -65,7 +65,7 @@ int main(int argc, char** argv) {
     const Skin::Fonts f{&regular, &bold, &mark};
 
     const std::vector<Skin::RailEntry> rail = {
-        {"Library", RailIcons::kLibrary}, {"Systems", RailIcons::kSettings}, {"Install", RailIcons::kInstall},
+        {"Library", RailIcons::kLibrary}, {"Systems", RailIcons::kSystems}, {"Install", RailIcons::kInstall},
         {"Settings", RailIcons::kSettings}, {"Paths", RailIcons::kPaths}, {"Artic", nullptr},
     };
 

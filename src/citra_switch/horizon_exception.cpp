@@ -80,7 +80,7 @@ void PutCodeField(const char* name, std::uint64_t value, std::uintptr_t base) {
 void BuildReport(ThreadExceptionDump* ctx) {
     const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(&_start);
 
-    Put("Dekopon: unhandled CPU exception\n");
+    Put("EmuSwitch: unhandled CPU exception\n");
     PutField("module base", base);
 
     if (!threadExceptionIsAArch64(ctx)) {

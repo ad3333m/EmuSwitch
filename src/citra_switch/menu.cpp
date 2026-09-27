@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "citra_switch/config.h"
+#include "citra_switch/custom_art.h"
 #include "citra_switch/input.h"
 #include "citra_switch/menu.h"
 #include "citra_switch/menu_data.h"
@@ -61,6 +62,14 @@ bool RotatedUpright() {
 
 Font g_font;
 Font g_font_bold;
+Font g_font_mark;
+
+Skin::Fonts SkinFonts() {
+    return {&g_font, &g_font_bold, &g_font_mark};
+}
+
+// The page name shown in the header; set per frame by Menu::Draw.
+std::string g_header_title = "Library";
 
 
 struct Repeater {
@@ -90,13 +99,14 @@ u32 NavMask(const MenuDirections& d) {
            (d.right ? DirRight : 0);
 }
 
-enum class Tab { Library, Install, Settings, Paths, Artic };
+enum class Tab { Library, Systems, Install, Settings, Paths, Artic };
 
 // Which pane the cursor lives in.
 enum class Focus { Rail, Content };
 
 // Indexed by Tab, so the order has to match the enum.
-constexpr std::array<std::pair<Tab, const char*>, 5> kRailItems{{{Tab::Library, "Library"},
+constexpr std::array<std::pair<Tab, const char*>, 6> kRailItems{{{Tab::Library, "Library"},
+                                                                 {Tab::Systems, "Systems"},
                                                                  {Tab::Install, "Install"},
                                                                  {Tab::Settings, "Settings"},
                                                                  {Tab::Paths, "Paths"},
@@ -327,186 +337,75 @@ int HintX() {
 
 // Draws a small button chip
 int DrawHint(Canvas& canvas, int x, int y, const char* button, const char* label) {
-    constexpr int chip_h = 26;
-    const int letter_w = g_font.Measure(button, 18);
-    const int chip_w = std::max(chip_h, letter_w + 16);
-    canvas.FillRoundRect(x, y, chip_w, chip_h, chip_h / 2, kColBadge);
-    g_font.Draw(canvas, x + (chip_w - letter_w) / 2, CenterBaseline(y, chip_h, 18), button, 18,
-                kColText);
-    const int label_x = x + chip_w + 8;
-    const int label_w = g_font.Draw(canvas, label_x, CenterBaseline(y, chip_h, 18), label, 18,
-                                    kColTextDim);
-    return chip_w + 8 + label_w;
+    return Skin::DrawHint(canvas, SkinFonts(), x, y, button, label);
 }
 
 // Indexed by Tab, so the order has to match the enum.
-constexpr std::array<const std::uint8_t*, 5> kRailIconMasks{
-    RailIcons::kLibrary, RailIcons::kInstall, RailIcons::kSettings, RailIcons::kPaths, nullptr};
+constexpr std::array<const std::uint8_t*, 6> kRailIconMasks{
+    RailIcons::kLibrary, RailIcons::kSystems, RailIcons::kInstall, RailIcons::kSettings, RailIcons::kPaths, nullptr};
 
 // Draws a nav-rail icon, tinted like text: the mask supplies coverage only.
-void DrawRailIcon(Canvas& canvas, Tab tab, int cx, int cy, u32 color) {
-    const std::uint8_t* mask = kRailIconMasks[static_cast<std::size_t>(tab)];
-    if (mask == nullptr) {
-        constexpr const char* label = "AB";
-        g_font.Draw(canvas, cx - g_font.Measure(label, 18) / 2, cy + 6, label, 18, color);
-        return;
-    }
-    const int x0 = cx - RailIcons::kSize / 2;
-    const int y0 = cy - RailIcons::kSize / 2;
-    for (int row = 0; row < RailIcons::kSize; ++row) {
-        for (int col = 0; col < RailIcons::kSize; ++col) {
-            canvas.Blend(x0 + col, y0 + row, color, mask[row * RailIcons::kSize + col]);
-        }
-    }
-}
 
 void DrawRail(Canvas& canvas, Tab active, Tab cursor, bool rail_focused) {
-    canvas.FillRect(0, 0, kRailW, g_screen_h, kColRail);
-    // The solid accent pill follows the cursor while the rail is focused.
-    const Tab pill = rail_focused ? cursor : active;
-    for (int i = 0; i < static_cast<int>(kRailItems.size()); ++i) {
-        const auto& [tab, label] = kRailItems[i];
-        const int y = RailItemTop(i);
-        const bool on = tab == pill;
-        const bool ghost = rail_focused && tab == active && tab != cursor;
-        if (on) {
-            canvas.FillRoundRect(12, y, kRailW - 24, kRailItemH, 16, kColAccent);
-        } else if (ghost) {
-            // Keep a faint marker on the section you came from.
-            canvas.FillRoundRect(12, y, kRailW - 24, kRailItemH, 16, kColSurface);
-        }
-        const u32 fg = on ? kColOnAccent : kColTextDim;
-        DrawRailIcon(canvas, tab, kRailW / 2, y + 32, fg);
-        const int tw = g_font.Measure(label, 18);
-        g_font.Draw(canvas, (kRailW - tw) / 2, y + 68, label, 18, fg);
+    std::vector<Skin::RailEntry> items;
+    for (std::size_t i = 0; i < kRailItems.size(); ++i) {
+        items.push_back({kRailItems[i].second, kRailIconMasks[i]});
     }
+    // The pill follows the cursor while the rail is focused; the page you came from keeps a ghost.
+    const int pill = static_cast<int>(rail_focused ? cursor : active);
+    const int ghost = rail_focused && active != cursor ? static_cast<int>(active) : -1;
+    Skin::DrawRail(canvas, SkinFonts(), items, pill, ghost);
 }
 
 void DrawHeader(Canvas& canvas, std::string_view subtitle) {
-    canvas.FillRect(kContentX, 0, ContentW(), kHeaderH, kColBg);
-    g_font.Draw(canvas, kContentX + 24, CenterBaseline(0, kHeaderH, 28), "EmuSwitch", 28, kColText);
-    if (!subtitle.empty()) {
-        const int sw = g_font.Measure(subtitle, 20);
-        g_font.Draw(canvas, g_screen_w - 24 - sw, CenterBaseline(0, kHeaderH, 20), subtitle, 20,
-                    kColTextDim);
-    }
-    canvas.FillRect(kContentX, kHeaderH - 1, ContentW(), 1, kColRail);
+    Skin::DrawHeader(canvas, SkinFonts(), g_header_title, subtitle);
 }
 
 void DrawNotice(Canvas& canvas) {
     if (g_notice_frames <= 0 || g_notice.empty()) {
         return;
     }
-    const int pad = 20;
-    const int tw = g_font.Measure(g_notice, 18);
-    const int w = tw + pad * 2;
-    const int x = kContentX + (ContentW() - w) / 2;
-    const int y = ContentBottom() - 52;
-    canvas.FillRoundRect(x, y, w, 36, 10, g_notice_is_error ? kColError : kColAccentDim);
-    g_font.Draw(canvas, x + pad, CenterBaseline(y, 36, 18), g_notice, 18, kColText);
+    Skin::DrawToast(canvas, SkinFonts(), g_notice, g_notice_is_error);
 }
 
 void DrawTile(Canvas& canvas, const GameEntry& game, int x, int y, bool selected,
               bool content_focused) {
-    if (selected && content_focused) {
-        canvas.RoundBorder(x, y, kTileW, kTileH, 14, 3, kColAccent, kColSurfaceHi);
-    } else if (selected) {
-        // Selected but the cursor is on the rail
-        canvas.RoundBorder(x, y, kTileW, kTileH, 14, 3, kColBadge, kColSurfaceHi);
-    } else {
-        canvas.FillRoundRect(x, y, kTileW, kTileH, 14, kColSurface);
+    Skin::TileInfo t;
+    t.title = game.title;
+    std::string subtitle = game.publisher;
+    if (game.system >= 0) {
+        t.system_id = Multi::Systems()[game.system].id;
+        subtitle = Multi::Systems()[game.system].name;
+    } else if (subtitle.empty()) {
+        subtitle = "Nintendo 3DS";
     }
-
-    const int icon_x = x + (kTileW - kIconSize) / 2;
-    const int icon_y = y + 14;
+    t.subtitle = subtitle;
+    t.art_key = game.path;
     if (!game.icon.empty()) {
-        canvas.BlitIcon(game.icon, game.icon_size, icon_x, icon_y, kIconSize);
-    } else if (game.system >= 0) {
-        // EmuSwitch: another system's game gets a plate in that system's colour.
-        const Multi::System& sys = Multi::Systems()[game.system];
-        canvas.FillRoundRect(icon_x, icon_y, kIconSize, kIconSize, 10, MakeColor(sys.r, sys.g, sys.b));
-        const std::string badge = sys.badge;
-        const int size = badge.size() > 3 ? 26 : 34;
-        const int bw = g_font.Measure(badge, size);
-        g_font.Draw(canvas, icon_x + (kIconSize - bw) / 2, CenterBaseline(icon_y, kIconSize, size), badge,
-                    size, MakeColor(0xFF, 0xFF, 0xFF));
-    } else {
-        // Placeholder plate with the file type initial.
-        canvas.FillRoundRect(icon_x, icon_y, kIconSize, kIconSize, 10, kColBadge);
-        const std::string letter = game.file_type.empty() ? "?" : game.file_type.substr(0, 1);
-        const int lw = g_font.Measure(letter, 40);
-        g_font.Draw(canvas, icon_x + (kIconSize - lw) / 2, CenterBaseline(icon_y, kIconSize, 40),
-                    letter, 40, kColTextDim);
-    }
-
-    const int text_w = kTileW - 24;
-    const std::string title = g_font.Truncate(game.title, 18, text_w);
-    const int title_w = g_font.Measure(title, 18);
-    g_font.Draw(canvas, x + (kTileW - title_w) / 2, icon_y + kIconSize + 24, title, 18, kColText);
-
-    // File type, then a LOCKED marker for encrypted dumps and an SD marker for installed titles.
-    const int badge_y = y + kTileH - 30;
-    int badge_x = x + 12;
-    if (!game.file_type.empty()) {
-        const int bw = g_font.Measure(game.file_type, 14) + 14;
-        canvas.FillRoundRect(badge_x, badge_y, bw, 20, 7, kColBadge);
-        g_font.Draw(canvas, badge_x + 7, CenterBaseline(badge_y, 20, 14), game.file_type, 14,
-                    kColTextDim);
-        badge_x += bw + 6;
+        t.icon = &game.icon;
+        t.icon_size = game.icon_size;
     }
     if (game.encrypted) {
-        const int lw = g_font.Measure("LOCKED", 14) + 14;
-        canvas.FillRoundRect(badge_x, badge_y, lw, 20, 7, kColAccentDim);
-        g_font.Draw(canvas, badge_x + 7, CenterBaseline(badge_y, 20, 14), "LOCKED", 14, kColText);
-        badge_x += lw + 6;
+        t.tags.push_back("LOCKED");
     }
     if (game.insertable && GetInsertedCartridge() == game.path) {
-        const int lw = g_font.Measure("CART", 14) + 14;
-        canvas.FillRoundRect(badge_x, badge_y, lw, 20, 7, kColAccentDim);
-        g_font.Draw(canvas, badge_x + 7, CenterBaseline(badge_y, 20, 14), "CART", 14, kColText);
-        badge_x += lw + 6;
+        t.tags.push_back("CART");
     }
     if (game.installed) {
-        const int lw = g_font.Measure("SD", 14) + 14;
-        canvas.FillRoundRect(badge_x, badge_y, lw, 20, 7, kColAccentDim);
-        g_font.Draw(canvas, badge_x + 7, CenterBaseline(badge_y, 20, 14), "SD", 14, kColText);
+        t.tags.push_back("SD");
     }
+    Skin::DrawTile(canvas, SkinFonts(), t, x, y, selected, content_focused);
 }
 
 void DrawEmptyLibrary(Canvas& canvas, const std::string& roms_dir) {
-    const char* line1 = "No games found";
-    const char* line2 = "Copy .3ds / .cci / .cxi / .3dsx files to";
-    const std::string line3 = g_font.TruncateFront(roms_dir, 18, ContentW() - 48);
-    const char* line4 = "or install a .cia from the Install tab";
-    const int cx = kContentX + ContentW() / 2;
-    const int top = (kContentTop + ContentBottom()) / 2 - 70;
-    const int w1 = g_font.Measure(line1, 26);
-    g_font.Draw(canvas, cx - w1 / 2, top, line1, 26, kColText);
-    const int w2 = g_font.Measure(line2, 18);
-    g_font.Draw(canvas, cx - w2 / 2, top + 36, line2, 18, kColTextDim);
-    const int w3 = g_font.Measure(line3, 18);
-    g_font.Draw(canvas, cx - w3 / 2, top + 60, line3, 18, kColAccent);
-    const int w4 = g_font.Measure(line4, 18);
-    g_font.Draw(canvas, cx - w4 / 2, top + 90, line4, 18, kColTextDim);
+    Skin::DrawEmptyLibrary(canvas, SkinFonts(), roms_dir);
 }
 
 // Layout of the library grid
-struct Grid {
-    int cols{};
-    int start_x{};
-    int top{};
-    int visible_rows{};
-};
+using Skin::Grid;
 
 Grid ComputeGrid() {
-    Grid g;
-    const int avail = ContentW() - 48;
-    g.cols = std::max(1, (avail + kTileGap) / (kTileW + kTileGap));
-    const int used = g.cols * kTileW + (g.cols - 1) * kTileGap;
-    g.start_x = kContentX + 24 + (avail - used) / 2;
-    g.top = kContentTop + 20;
-    g.visible_rows = std::max(1, (ContentBottom() - g.top) / (kTileH + kTileGap));
-    return g;
+    return Skin::ComputeGrid(g_screen_w, g_screen_h);
 }
 
 // swkbd search prompt
@@ -1020,6 +919,8 @@ public:
                 HandleRail(down, nav);
             } else if (tab == Tab::Library) {
                 done = HandleLibrary(down, nav, result);
+            } else if (tab == Tab::Systems) {
+                HandleSystems(down, nav);
             } else if (tab == Tab::Install) {
                 HandleInstall(down, nav);
             } else if (tab == Tab::Settings) {
@@ -1198,6 +1099,7 @@ private:
 
     void Rescan() {
         games = ScanGames();
+        Art::LoadGameArt(games);
         paths = GetPaths();
         RefreshRomsDir2Presence();
         // Only seeds the Install page's starting folder: once it has been browsed, an empty
@@ -1416,6 +1318,13 @@ private:
                 details = GetTitleDetails(games[filtered[selected]]);
                 details_open = true;
             }
+        }
+        if (count > 0 && (down & HidNpadButton_L)) {
+            PickGamePicture(games[filtered[selected]]);
+        }
+        if (count > 0 && (down & HidNpadButton_R) && Skin::HasGameImage(games[filtered[selected]].path)) {
+            const std::string err = Art::SetGameArt(games[filtered[selected]], "");
+            ShowNotice(err.empty() ? "Picture removed" : err, !err.empty());
         }
         if (down & HidNpadButton_X) {
             search = PromptSearch(search);
@@ -1666,6 +1575,7 @@ private:
         if (ok) {
             // A successful install may have put a new title in the library's reach.
             games = ScanGames();
+            Art::LoadGameArt(games);
             ApplyFilter();
         }
     }
@@ -2768,12 +2678,26 @@ private:
         return Browse(title, start, true);
     }
 
+    std::optional<std::string> BrowseForImage(const char* title, const std::string& start) {
+        return Browse(title, start, true, true);
+    }
+
     // The shared folder/file browser. In file mode the files in the current folder are listed
     // below its subfolders and A returns one; in folder mode + returns the folder itself.
-    std::optional<std::string> Browse(const char* title, const std::string& start, bool pick_file) {
+    std::optional<std::string> Browse(const char* title, const std::string& start, bool pick_file,
+                                      bool images_only = false) {
+        auto list_files = [images_only](const std::string& d) {
+            std::vector<FileEntry> all = ListFilesIn(d);
+            if (images_only) {
+                all.erase(std::remove_if(all.begin(), all.end(),
+                                         [](const FileEntry& f) { return !Art::IsImageFile(f.name); }),
+                          all.end());
+            }
+            return all;
+        };
         std::string dir = EnsureDirectory(start) ? start : std::string{"sdmc:/"};
         std::vector<DirEntry> entries = ListSubdirectories(dir);
-        std::vector<FileEntry> files = pick_file ? ListFilesIn(dir) : std::vector<FileEntry>{};
+        std::vector<FileEntry> files = pick_file ? list_files(dir) : std::vector<FileEntry>{};
         int sel = 0;
         int scroll = 0;
         Repeater rep;
@@ -2781,7 +2705,7 @@ private:
         auto Enter = [&](const std::string& next, const std::string& highlight) {
             dir = next;
             entries = dir.empty() ? ListDevices() : ListSubdirectories(dir);
-            files = pick_file && !dir.empty() ? ListFilesIn(dir) : std::vector<FileEntry>{};
+            files = pick_file && !dir.empty() ? list_files(dir) : std::vector<FileEntry>{};
             const int base = dir.empty() ? 0 : 1;
             sel = 0;
             scroll = 0;
@@ -2848,7 +2772,7 @@ private:
                      const std::vector<DirEntry>& entries, const std::vector<FileEntry>& files,
                      int sel, int scroll, bool pick_file) {
         Canvas& c = canvas;
-        c.Clear(kColBg);
+        Skin::DrawBackdrop(c);
 
         const bool devices = dir.empty();
         g_font.Draw(c, 40, 44, devices ? "Select device" : title, 28, kColText);
@@ -2887,7 +2811,7 @@ private:
         c.FillRect(0, ContentBottom(), g_screen_w, kHintH, kColHintBar);
         c.FillRect(0, ContentBottom(), g_screen_w, 1, kColRail);
         int hx = 40;
-        const int hy = ContentBottom() + (kHintH - 26) / 2;
+        const int hy = ContentBottom() + (kHintH - 28) / 2;
         hx += DrawHint(c, hx, hy, "A", pick_file ? "Open / Select" : "Open") + 22;
         hx += DrawHint(c, hx, hy, "B", has_parent ? "Up" : "Cancel") + 22;
         if (!devices && !pick_file) {
@@ -2940,7 +2864,7 @@ private:
             DrawRailHints(c);
         } else {
             int hx = HintX();
-            const int hy = ContentBottom() + (kHintH - 26) / 2;
+            const int hy = ContentBottom() + (kHintH - 28) / 2;
             hx +=
                 DrawHint(c, hx, hy, "A", paths_sel == PathRowRecursive ? "Toggle" : "Browse") + 22;
             hx += DrawHint(c, hx, hy, "Y", paths_sel == PathRowRomsDir2 ? "Clear" : "Default") + 22;
@@ -3025,7 +2949,7 @@ private:
                 action = "Toggle";
             }
             int hx = HintX();
-            const int hy = ContentBottom() + (kHintH - 26) / 2;
+            const int hy = ContentBottom() + (kHintH - 28) / 2;
             hx += DrawHint(c, hx, hy, "A", action) + 22;
             hx += DrawHint(c, hx, hy, "B", "Menu") + 22;
             DrawHint(c, hx, hy, "+ -", "Exit");
@@ -3143,7 +3067,8 @@ private:
 
     void Draw() {
         Canvas& c = canvas;
-        c.Clear(kColBg);
+        Skin::DrawBackdrop(c);
+        g_header_title = PerGameOpen() ? "Game settings" : kRailItems[static_cast<std::size_t>(tab)].second;
         DrawHintBar(c);
         if (PerGameOpen()) {
             DrawRail(c, Tab::Settings, Tab::Settings, false);
@@ -3154,6 +3079,8 @@ private:
         DrawRail(c, tab, rail_sel, focus == Focus::Rail);
         if (tab == Tab::Library) {
             DrawLibrary(c);
+        } else if (tab == Tab::Systems) {
+            DrawSystemsPage(c);
         } else if (tab == Tab::Install) {
             DrawInstallPage(c);
         } else if (tab == Tab::Settings) {
@@ -3248,7 +3175,7 @@ private:
             return;
         }
         int hx = HintX();
-        const int hy = ContentBottom() + (kHintH - 26) / 2;
+        const int hy = ContentBottom() + (kHintH - 28) / 2;
         hx += DrawHint(c, hx, hy, "A", SelectedCia() ? "Install" : "Open") + 22;
         hx += DrawHint(c, hx, hy, "B", "Menu") + 22;
         hx += DrawHint(c, hx, hy, "Y", "Refresh") + 22;
@@ -3479,13 +3406,132 @@ private:
             DrawRailHints(c);
         } else {
             int hx = HintX();
-            const int hy = ContentBottom() + (kHintH - 26) / 2;
-            hx += DrawHint(c, hx, hy, "A", "Launch") + 22;
-            hx += DrawHint(c, hx, hy, "B", "Menu") + 22;
+            const int hy = ContentBottom() + (kHintH - 28) / 2;
+            hx += DrawHint(c, hx, hy, "A", "Play") + 22;
             hx += DrawHint(c, hx, hy, "X", "Search") + 22;
             hx += DrawHint(c, hx, hy, "Y", "Refresh") + 22;
+            hx += DrawHint(c, hx, hy, "L", "Picture") + 22;
             hx += DrawHint(c, hx, hy, "+", "Details") + 22;
             DrawHint(c, hx, hy, "+ -", "Exit");
+        }
+    }
+
+    // ---- Systems: a picture for each system ------------------------------------------
+
+    static constexpr int kSysCols = 6;
+    static constexpr int kSysCardW = 150;
+    static constexpr int kSysCardH = 112;
+    static constexpr int kSysGapX = 24;
+    static constexpr int kSysRowH = kSysCardH + 50;
+    int systems_sel = 0;
+    int systems_scroll = 0;
+    std::string picture_dir = "sdmc:/";
+
+    int SystemsVisibleRows() const {
+        return std::max(1, (ContentBottom() - kContentTop - 16) / kSysRowH);
+    }
+
+    void PickGamePicture(const GameEntry& game) {
+        const std::string title = "Picture for " + game.title;
+        const std::optional<std::string> picked = BrowseForImage(title.c_str(), picture_dir);
+        if (!picked) {
+            return;
+        }
+        picture_dir = ParentDirectory(*picked);
+        ShowBusy("Loading picture...");
+        const std::string err = Art::SetGameArt(game, *picked);
+        ShowNotice(err.empty() ? "Picture set for " + game.title : "Couldn't use that picture: " + err, !err.empty());
+    }
+
+    void HandleSystems(u64 down, u32 nav) {
+        const auto& systems = Art::Systems();
+        const int count = static_cast<int>(systems.size());
+        if (nav & DirLeft) {
+            systems_sel = std::max(0, systems_sel - 1);
+        }
+        if (nav & DirRight) {
+            systems_sel = std::min(count - 1, systems_sel + 1);
+        }
+        if (nav & DirUp) {
+            systems_sel = std::max(0, systems_sel - kSysCols);
+        }
+        if (nav & DirDown) {
+            systems_sel = std::min(count - 1, systems_sel + kSysCols);
+        }
+        const int row = systems_sel / kSysCols;
+        systems_scroll = std::clamp(systems_scroll, row - SystemsVisibleRows() + 1, row);
+        const std::string& id = systems[systems_sel].id;
+        if (down & HidNpadButton_A) {
+            const std::string title = "Picture for " + systems[systems_sel].name;
+            const std::optional<std::string> picked = BrowseForImage(title.c_str(), picture_dir);
+            if (picked) {
+                picture_dir = ParentDirectory(*picked);
+                ShowBusy("Loading picture...");
+                const std::string err = Art::SetSystemArt(id, *picked);
+                ShowNotice(err.empty() ? systems[systems_sel].name + " picture set" : "Couldn't use that picture: " + err,
+                           !err.empty());
+            }
+        }
+        if ((down & HidNpadButton_X) && Skin::HasSystemImage(id)) {
+            const std::string err = Art::SetSystemArt(id, "");
+            ShowNotice(err.empty() ? systems[systems_sel].name + " back to its default look" : err, !err.empty());
+        }
+        if (down & HidNpadButton_B) {
+            EnterRail();
+        }
+    }
+
+    void DrawSystemsPage(Canvas& c) {
+        DrawHeader(c, "PNG, JPEG or WebP, any size");
+        const auto& systems = Art::Systems();
+        const int count = static_cast<int>(systems.size());
+        const int used = kSysCols * kSysCardW + (kSysCols - 1) * kSysGapX;
+        const int x0 = kContentX + (ContentW() - used) / 2;
+        const int y0 = kContentTop + 8;
+        const bool focused = focus == Focus::Content;
+        for (int i = 0; i < count; ++i) {
+            const int row = i / kSysCols - systems_scroll;
+            if (row < 0 || row >= SystemsVisibleRows()) {
+                continue;
+            }
+            const int x = x0 + (i % kSysCols) * (kSysCardW + kSysGapX);
+            const int y = y0 + row * kSysRowH;
+            const bool on = i == systems_sel;
+            if (on && focused) {
+                c.SoftShadow(x, y, kSysCardW, kSysCardH, 18, 12, 8, 0xC0);
+            }
+            Skin::DrawSystemMark(c, SkinFonts(), systems[i].id, x, y, kSysCardW, kSysCardH, 18);
+            if (on) {
+                c.RingRoundAA(x - 3, y - 3, kSysCardW + 6, kSysCardH + 6, 21, 3.0f,
+                              focused ? kColAccent : MakeColor(0x2F, 0xD6, 0xC9, 0x70));
+            }
+            const std::string name = g_font.Truncate(systems[i].name, 15, kSysCardW);
+            const int nw = g_font.Measure(name, 15);
+            g_font.Draw(c, x + (kSysCardW - nw) / 2, y + kSysCardH + 22, name, 15, on ? kColText : kColTextDim);
+            if (Skin::HasSystemImage(systems[i].id)) {
+                const char* tag = "CUSTOM";
+                const int tw = g_font_bold.Measure(tag, 11) + 12;
+                c.FillRoundAA(x + 8, y + 8, tw, 18, 9, MakeColor(0, 0, 0, 0xB0));
+                g_font_bold.Draw(c, x + 14, CenterBaseline(y + 8, 18, 11), tag, 11, kColText);
+            }
+        }
+        const int rows = (count + kSysCols - 1) / kSysCols;
+        if (rows > SystemsVisibleRows()) {
+            const int track_h = SystemsVisibleRows() * kSysRowH - 20;
+            const int thumb_h = std::max(24, track_h * SystemsVisibleRows() / rows);
+            const int thumb_y = y0 + (track_h - thumb_h) * systems_scroll / std::max(1, rows - SystemsVisibleRows());
+            Skin::DrawScrollbar(c, g_screen_w - 12, y0, track_h, thumb_y, thumb_h);
+        }
+        if (focus == Focus::Rail) {
+            DrawRailHints(c);
+        } else {
+            int hx = HintX();
+            const int hy = ContentBottom() + (kHintH - 28) / 2;
+            hx += DrawHint(c, hx, hy, "A", "Choose picture") + 22;
+            if (Skin::HasSystemImage(systems[systems_sel].id)) {
+                hx += DrawHint(c, hx, hy, "X", "Use default") + 22;
+            }
+            DrawHint(c, hx, hy, "B", "Back");
         }
     }
 
@@ -3495,12 +3541,10 @@ private:
             return;
         }
         const int track_h = grid.visible_rows * (kTileH + kTileGap) - kTileGap;
-        const int track_x = g_screen_w - 10;
-        c.FillRoundRect(track_x, grid.top, 4, track_h, 2, kColRail);
         const int thumb_h = std::max(24, track_h * grid.visible_rows / total_rows);
         const int max_scroll = total_rows - grid.visible_rows;
         const int thumb_y = grid.top + (track_h - thumb_h) * scroll_row / std::max(1, max_scroll);
-        c.FillRoundRect(track_x, thumb_y, 4, thumb_h, 2, kColAccent);
+        Skin::DrawScrollbar(c, g_screen_w - 12, grid.top, track_h, thumb_y, thumb_h);
     }
 
     static constexpr int kRowH = 41;
@@ -3638,7 +3682,7 @@ private:
             DrawRailHints(c);
         } else {
             int hx = HintX();
-            const int hy = ContentBottom() + (kHintH - 26) / 2;
+            const int hy = ContentBottom() + (kHintH - 28) / 2;
             const bool modal = has_sel && settings_rows[sel].modal != SettingsModal::None;
             if (modal) {
                 hx += DrawHint(c, hx, hy, "A", "Configure") + 22;
@@ -3858,14 +3902,13 @@ private:
     }
 
     void DrawHintBar(Canvas& c) {
-        c.FillRect(0, ContentBottom(), g_screen_w, kHintH, kColHintBar);
-        c.FillRect(0, ContentBottom(), g_screen_w, 1, kColRail);
+        Skin::DrawHintBar(c);
     }
 
     // Legend shown while the cursor sits on the Library/Settings rail.
     void DrawRailHints(Canvas& c) {
         int hx = HintX();
-        const int hy = ContentBottom() + (kHintH - 26) / 2;
+        const int hy = ContentBottom() + (kHintH - 28) / 2;
         hx += DrawHint(c, hx, hy, "^v", "Move") + 22;
         hx += DrawHint(c, hx, hy, "A", "Open") + 22;
         hx += DrawHint(c, hx, hy, "B", "Back") + 22;
@@ -3913,7 +3956,7 @@ private:
     }
 
     void DrawLoading() {
-        canvas.Clear(kColBg);
+        Skin::DrawBackdrop(canvas);
         const char* msg = "Loading library...";
         const int w = g_font.Measure(msg, 24);
         g_font.Draw(canvas, kContentX + (ContentW() - w) / 2, g_screen_h / 2, msg, 24, kColTextDim);
@@ -3979,12 +4022,20 @@ private:
 } // namespace
 
 MenuResult RunMenu(PadState& pad) {
-    if (!g_font.Init()) {
+    // Inter from the romfs, with the console's fonts behind it for anything it lacks.
+    g_font_bold.Init("romfs:/fonts/Inter-Bold.ttf");
+    g_font_mark.Init("romfs:/fonts/Inter-BlackItalic.ttf");
+    if (!g_font.Init("romfs:/fonts/Inter-Medium.ttf")) {
         // Exit on no font found.
         return {MenuAction::Exit, {}};
     }
     // The last game may have written to the CFG savegame the System page reads.
     RefreshSystemSettings();
+    static bool art_loaded = false;
+    if (!art_loaded) {
+        Art::LoadSystemArt();
+        art_loaded = true;
+    }
     Menu menu;
     return menu.Run(pad);
 }
@@ -3995,6 +4046,8 @@ void SetMenuNotice(const std::string& text, bool error) {
 
 void ShutdownMenu() {
     g_font.Shutdown();
+    g_font_bold.Shutdown();
+    g_font_mark.Shutdown();
 }
 
 } // namespace SwitchFrontend

@@ -72,6 +72,25 @@ core stella a2600
 core handy lynx
 ls -la "$EMUS"
 
+# The menu's font: Inter (SIL Open Font License), in the romfs next to the emulators.
+FONTS="$ROOT/dist/emuswitch-romfs/fonts"
+mkdir -p "$FONTS"
+fetch https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip /tmp/inter.zip
+python3 - /tmp/inter.zip "$FONTS" <<'PY'
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+want = {"Inter-Medium.ttf", "Inter-Bold.ttf", "Inter-BlackItalic.ttf", "LICENSE.txt"}
+for n in z.namelist():
+    base = n.split("/")[-1]
+    if base in want and ("extras/ttf/" in n or base == "LICENSE.txt"):
+        open(sys.argv[2] + "/" + base, "wb").write(z.read(n))
+        want.discard(base)
+missing = want - {"LICENSE.txt"}
+if missing:
+    sys.exit("missing fonts: %s" % missing)
+PY
+ls -la "$FONTS"
+
 # 5. EmuSwitch itself (Dekopon's frontend running the 3DS engine in-process).
 cmake -S . -B build/switch \
     -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
