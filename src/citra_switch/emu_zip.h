@@ -1,15 +1,15 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
-#include <switch.h>
 
 struct ZipEntry {
     std::string name;
-    u16 method = 0;
-    u32 compSize = 0;
-    u32 size = 0;
-    u32 localOffset = 0;
+    std::uint16_t method = 0;
+    std::uint32_t compSize = 0;
+    std::uint32_t size = 0;
+    std::uint32_t localOffset = 0;
 };
 
 std::vector<ZipEntry> zipList(const std::string& path);

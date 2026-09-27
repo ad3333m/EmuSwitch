@@ -36,6 +36,7 @@ add_executable(citra_switch
     menu.cpp
     menu.h
     menu_data.cpp
+    multi_handoff.cpp
     multi_system.cpp
     multi_system.h
     emu_zip.cpp

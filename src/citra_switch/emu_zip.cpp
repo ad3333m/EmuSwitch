@@ -9,6 +9,10 @@
 
 namespace {
 
+using u8 = std::uint8_t;
+using u16 = std::uint16_t;
+using u32 = std::uint32_t;
+
 u32 rd32(const u8* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((u32)p[3] << 24); }
 u16 rd16(const u8* p) { return p[0] | (p[1] << 8); }
 

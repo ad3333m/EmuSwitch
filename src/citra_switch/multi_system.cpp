@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <cctype>
 #include <cstdio>
 #include <dirent.h>
@@ -31,7 +32,7 @@ constexpr const char* ROMS = "sdmc:/roms";
 constexpr const char* PS2_ROOT = "sdmc:/switch/armsx2";
 constexpr const char* PS2_BIOS_DIR = "sdmc:/switch/armsx2/bios";
 constexpr const char* PS2_INI = "sdmc:/switch/armsx2/armsx2.ini";
-constexpr s64 PS2_BIOS_SIZE = 4 * 1024 * 1024;
+constexpr std::int64_t PS2_BIOS_SIZE = 4 * 1024 * 1024;
 
 std::thread s_setup;
 std::mutex s_setup_mutex;
@@ -55,9 +56,9 @@ std::string BaseName(const std::string& path) {
     return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
-s64 FileSize(const std::string& p) {
+std::int64_t FileSize(const std::string& p) {
     struct stat st;
-    return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode) ? static_cast<s64>(st.st_size) : -1;
+    return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode) ? static_cast<std::int64_t>(st.st_size) : -1;
 }
 
 void MakeDirs(const std::string& path) {
@@ -101,7 +102,7 @@ bool CopyFile(const std::string& from, const std::string& to) {
 }
 
 std::string EmulatorPath(int system) {
-    return std::string(EMUS) + "/" + Systems()[system].id + ".nro";
+    return std::string(EMUS) + "/" + Systems()[system].emu + ".nro";
 }
 
 // "Pokemon - Emerald Version (USA, Europe)" -> "Pokemon - Emerald Version".
@@ -251,22 +252,42 @@ void SetupPs2() {
     ConfigurePs2(found[0]);
 }
 
+// Adds `key = "value"` to a RetroArch options file unless the key is already set.
+void EnsureOption(const std::string& file, const char* key, const char* value) {
+    std::vector<std::string> lines = ReadLines(file.c_str());
+    for (const std::string& l : lines)
+        if (Trim(l).rfind(key, 0) == 0) return;
+    lines.push_back(std::string(key) + " = \"" + value + "\"");
+    const size_t slash = file.find_last_of('/');
+    MakeDirs(file.substr(0, slash));
+    WriteLines(file.c_str(), lines);
+}
+
+// Dreamcast runs on Flycast's built-in BIOS, so no dc_boot.bin is needed.
+void SetupRetroArchOptions() {
+    EnsureOption("sdmc:/retroarch/config/Flycast/Flycast.opt", "flycast_hle_bios", "enabled");
+    EnsureOption("sdmc:/retroarch/retroarch-core-options.cfg", "flycast_hle_bios", "enabled");
+}
+
 void SetupThread() {
     MakeDirs(EMUS);
     for (const System& s : Systems()) MakeDirs(std::string(ROMS) + "/" + s.id);
     MakeDirs(std::string(ROMS) + "/3ds");
-    const auto& sys = Systems();
-    for (size_t i = 0; i < sys.size(); i++) {
-        const std::string src = std::string("romfs:/emus/") + sys[i].id + ".nro";
-        const std::string dst = EmulatorPath(static_cast<int>(i));
-        const s64 want = FileSize(src);
-        if (want > 0 && FileSize(dst) != want) {
-            LOG_INFO(Frontend, "Unpacking the {} emulator", sys[i].name);
-            if (!CopyFile(src, dst)) LOG_ERROR(Frontend, "Couldn't unpack {}", dst);
-        }
-    }
     SetupPs2();
+    SetupRetroArchOptions();
     s_setup_done = true;
+}
+
+// Emulators unpack the first time their system is played, not all up front: with
+// every system bundled that would be over half a gigabyte of SD card.
+bool EnsureEmulator(int system) {
+    const std::string src = std::string("romfs:/emus/") + Systems()[system].emu + ".nro";
+    const std::string dst = EmulatorPath(system);
+    const std::int64_t want = FileSize(src);
+    if (want <= 0) return FileSize(dst) > 0;
+    if (FileSize(dst) == want) return true;
+    LOG_INFO(Frontend, "Unpacking the {} emulator", Systems()[system].name);
+    return CopyFile(src, dst);
 }
 
 void WaitSetup() {
@@ -277,22 +298,51 @@ void WaitSetup() {
 }  // namespace
 
 const std::vector<System>& Systems() {
+    // Cartridge systems also take .zip/.7z inside their own folder (RetroArch opens them).
     static const std::vector<System> systems = {
-        {"ds", "Nintendo DS", "DS", 0x3D, 0x7B, 0xFF, {"nds", "dsi"}, true},
-        {"gba", "Game Boy Advance", "GBA", 0x8B, 0x5C, 0xF6, {"gba"}, true},
-        {"gb", "Game Boy", "GB", 0x22, 0xC5, 0x5E, {"gb", "gbc", "sgb"}, true},
-        {"ps2", "PlayStation 2", "PS2", 0x38, 0xBD, 0xF8, {"iso", "chd", "cso", "zso", "cue"}, true},
-        {"wiiu", "Wii U", "Wii U", 0x2D, 0xD4, 0xBF, {"wua", "wud", "wux", "rpx"}, false},
+        {"ds", "Nintendo DS", "DS", "ds", 0x3D, 0x7B, 0xFF, {"nds", "dsi", "zip", "7z"}, {"nds", "dsi"}, true},
+        {"gba", "Game Boy Advance", "GBA", "gba", 0x8B, 0x5C, 0xF6, {"gba", "zip", "7z"}, {"gba"}, true},
+        {"gb", "Game Boy", "GB", "gb", 0x22, 0xC5, 0x5E, {"gb", "gbc", "sgb", "zip", "7z"}, {"gb", "gbc", "sgb"}, true},
+        {"nes", "NES", "NES", "nes", 0xE1, 0x3B, 0x3B, {"nes", "fds", "unf", "unif", "zip", "7z"}, {"nes", "fds", "unf", "unif"}, true},
+        {"snes", "Super Nintendo", "SNES", "snes", 0x7E, 0x6C, 0xD8, {"sfc", "smc", "fig", "swc", "bs", "zip", "7z"}, {"sfc", "smc", "fig", "swc", "bs"}, true},
+        {"n64", "Nintendo 64", "N64", "n64", 0x10, 0x9A, 0x4E, {"n64", "z64", "v64", "zip", "7z"}, {"n64", "z64", "v64"}, true},
+        {"vb", "Virtual Boy", "VB", "vb", 0xD1, 0x1F, 0x3A, {"vb", "vboy", "zip"}, {"vb", "vboy"}, true},
+        {"ps1", "PlayStation", "PS1", "ps1", 0x9C, 0xA3, 0xB5, {"cue", "chd", "pbp", "m3u", "ccd", "iso", "ecm"}, {"pbp", "cue", "chd", "m3u", "ccd", "ecm"}, true},
+        {"ps2", "PlayStation 2", "PS2", "ps2", 0x38, 0xBD, 0xF8, {"iso", "chd", "cso", "zso", "cue"}, {"iso", "cso", "zso"}, true},
+        {"psp", "PSP", "PSP", "psp", 0x4B, 0x55, 0x63, {"iso", "cso", "pbp", "chd"}, {}, true},
+        {"md", "Mega Drive / Genesis", "MD", "genesis", 0x1F, 0x1F, 0x2E, {"md", "gen", "smd", "68k", "sgd", "bin", "zip", "7z"}, {"md", "gen", "smd", "68k", "sgd"}, true},
+        {"sms", "Master System", "SMS", "genesis", 0x2B, 0x55, 0xC7, {"sms", "sg", "zip", "7z"}, {"sms", "sg"}, true},
+        {"gg", "Game Gear", "GG", "genesis", 0x33, 0x33, 0x40, {"gg", "zip", "7z"}, {"gg"}, true},
+        {"dc", "Dreamcast", "DC", "dc", 0xF0, 0x7A, 0x1E, {"cdi", "gdi", "chd", "cue"}, {"cdi", "gdi"}, true},
+        {"arcade", "Arcade", "Arcade", "arcade", 0xF5, 0x9E, 0x0B, {"zip", "7z"}, {}, true},
+        {"pce", "PC Engine", "PCE", "pce", 0xF4, 0x72, 0xB6, {"pce", "sgx", "cue", "ccd", "chd", "zip"}, {"pce", "sgx"}, true},
+        {"ngp", "Neo Geo Pocket", "NGP", "ngp", 0x0E, 0xA5, 0xE9, {"ngp", "ngc", "zip"}, {"ngp", "ngc"}, true},
+        {"ws", "WonderSwan", "WS", "ws", 0x64, 0x74, 0x8B, {"ws", "wsc", "zip"}, {"ws", "wsc"}, true},
+        {"a2600", "Atari 2600", "2600", "a2600", 0xB4, 0x53, 0x09, {"a26", "bin", "zip"}, {"a26"}, true},
+        {"lynx", "Atari Lynx", "Lynx", "lynx", 0xCA, 0x8A, 0x04, {"lnx", "zip"}, {"lnx"}, true},
+        {"wiiu", "Wii U", "Wii U", "wiiu", 0x2D, 0xD4, 0xBF, {"wua", "wud", "wux", "rpx"}, {"wua", "wud", "wux", "rpx"}, false},
     };
     return systems;
 }
 
 int SystemForPath(const std::string& path) {
     const std::string ext = ExtOf(path);
+    const std::string low = Lower(path);
     const auto& sys = Systems();
+    auto has = [&ext](const std::vector<std::string>& list) {
+        return std::find(list.begin(), list.end(), ext) != list.end();
+    };
+    // Inside sdmc:/roms/<id>/, that folder decides.
     for (size_t i = 0; i < sys.size(); i++)
-        if (std::find(sys[i].exts.begin(), sys[i].exts.end(), ext) != sys[i].exts.end())
-            return static_cast<int>(i);
+        if (low.find(std::string("/roms/") + sys[i].id + "/") != std::string::npos)
+            return has(sys[i].exts) ? static_cast<int>(i) : -1;
+    if (low.find("/switch/armsx2/games/") != std::string::npos) {
+        for (size_t i = 0; i < sys.size(); i++)
+            if (std::string(sys[i].id) == "ps2") return has(sys[i].exts) ? static_cast<int>(i) : -1;
+    }
+    // Anywhere else only unambiguous extensions count.
+    for (size_t i = 0; i < sys.size(); i++)
+        if (has(sys[i].loose)) return static_cast<int>(i);
     return -1;
 }
 
@@ -312,7 +362,7 @@ void AddGames(std::vector<GameEntry>& games) {
     auto add = [&](const std::string& path, const std::string& name, int only) {
         const std::string low = Lower(path);
         if (low.find("/bios") != std::string::npos) return;
-        const int s = SystemForPath(name);
+        const int s = SystemForPath(path);
         if (s < 0 || (only >= 0 && s != only) || seen(path)) return;
         GameEntry e;
         e.path = path;
@@ -339,7 +389,7 @@ void AddGames(std::vector<GameEntry>& games) {
         }
         closedir(d);
     }
-    Walk(std::string(PS2_ROOT) + "/games", 4, [&](const std::string& p, const std::string& n) { add(p, n, 3); });
+    Walk(std::string(PS2_ROOT) + "/games", 4, [&](const std::string& p, const std::string& n) { add(p, n, -1); });
 }
 
 bool Launch(const std::string& path, std::string& error) {
@@ -351,8 +401,8 @@ bool Launch(const std::string& path, std::string& error) {
     WaitSetup();
     const System& sys = Systems()[s];
     const std::string nro = EmulatorPath(s);
-    if (FileSize(nro) <= 0) {
-        error = std::string("The ") + sys.name + " emulator isn't installed";
+    if (!EnsureEmulator(s) || FileSize(nro) <= 0) {
+        error = std::string("Couldn't unpack the ") + sys.name + " emulator. Is the SD card full?";
         return false;
     }
     if (std::string(sys.id) == "ps2" && s_ps2_bios.empty()) {
@@ -363,7 +413,7 @@ bool Launch(const std::string& path, std::string& error) {
     const std::string sd = nro.substr(5);
     std::string argv = "\"" + sd + "\"";
     if (sys.takes_game) argv += " \"" + path + "\"";
-    if (R_FAILED(envSetNextLoad(sd.c_str(), argv.c_str()))) {
+    if (!HandOff(sd, argv)) {
         error = "Couldn't hand over to the emulator";
         return false;
     }
