@@ -13,6 +13,7 @@
 #include <cstring>
 #include <ctime>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -22,6 +23,8 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include <sys/stat.h>
 
 #include "citra_switch/config.h"
 #include "citra_switch/cover_fetch.h"
@@ -35,6 +38,7 @@
 #include "citra_switch/rail_icons.h"
 #include "citra_switch/save_manager.h"
 #include "citra_switch/settings_menu.h"
+#include "citra_switch/steamgriddb.h"
 #include "citra_switch/updater.h"
 #include "citra_switch/usb_storage.h"
 #include "common/horizon_boost.h"
@@ -866,6 +870,7 @@ public:
     MenuResult Run(PadState& pad) {
         pad_state = &pad;
         LoadSystemOrder();
+        LoadGameOrder();
         EnsureFramebuffer();
         ApplyRotation();
         // The loading screen keeps moving while the library is read.
@@ -1243,6 +1248,17 @@ private:
         if (tab == Tab::Settings && next != Tab::Settings) {
             FlushSettings();
         }
+        if (next != tab) {
+            // Menus close and anything being carried goes back where it was.
+            game_menu = GameMenu::None;
+            if (game_moving) {
+                CancelGameMove();
+            }
+            system_menu_open = false;
+            if (system_moving) {
+                CancelSystemMove();
+            }
+        }
         if (tab == Tab::Paths && next != Tab::Paths) {
             // The library on screen came from the old directory so it must be re-read.
             const bool stale = ScanInputsChanged();
@@ -1393,10 +1409,12 @@ private:
                 filtered.push_back(i);
             }
         }
-        // Grouped by console in the player's order; the titles stay sorted within each.
+        // Grouped by console in the player's order; within each, the games in the player's
+        // order (Move Placement), then the rest by title.
         std::stable_sort(filtered.begin(), filtered.end(), [this](int a, int b) {
-            return SystemRank(games[static_cast<std::size_t>(a)].system) <
-                   SystemRank(games[static_cast<std::size_t>(b)].system);
+            const int sa = SystemRank(games[static_cast<std::size_t>(a)].system);
+            const int sb = SystemRank(games[static_cast<std::size_t>(b)].system);
+            return sa != sb ? sa < sb : GameRank(a) < GameRank(b);
         });
         selected = std::clamp(selected, 0, std::max(0, static_cast<int>(filtered.size()) - 1));
         BuildHomeLayout();
@@ -1474,6 +1492,15 @@ private:
     bool HandleLibrary(u64 down, u32 nav, MenuResult& result) {
         const Grid grid = ComputeGrid();
         const int count = static_cast<int>(filtered.size());
+        if (game_menu != GameMenu::None) {
+            HandleGameMenu(down, nav);
+            return false;
+        }
+        if (game_moving) {
+            HandleGameMove(down, nav);
+            EnsureVisible(grid);
+            return false;
+        }
         if (count > 0) {
             if (nav & DirLeft) {
                 selected = std::max(0, selected - 1);
@@ -1491,15 +1518,15 @@ private:
                 result = {MenuAction::Launch, games[filtered[selected]].path};
                 return true;
             }
-            // Guarded so that reaching for the +/- exit combo doesn't flash the panel open.
+            // Guarded so that reaching for the +/- exit combo doesn't flash the menu open.
             if ((down & HidNpadButton_Plus) && !(held & HidNpadButton_Minus)) {
-                details = GetTitleDetails(games[filtered[selected]]);
-                details_customised = HasPerGameConfig(games[filtered[selected]].program_id);
-                details_open = true;
+                OpenGameMenu(GameMenu::Actions);
+                return false;
             }
         }
         if (count > 0 && (down & HidNpadButton_L) && IsPictureEditingEnabled()) {
-            PickGamePicture(games[filtered[selected]]);
+            OpenGameMenu(GameMenu::Picture);
+            return false;
         }
         if (count > 0 && (down & HidNpadButton_R) && IsPictureEditingEnabled() &&
             Skin::HasGameImage(games[filtered[selected]].path)) {
@@ -1912,6 +1939,22 @@ private:
         case SettingsModal::InstallMovable:
             InstallUniqueData(static_cast<UniqueDataFile>(
                 static_cast<int>(modal) - static_cast<int>(SettingsModal::InstallSecureInfo)));
+            break;
+        case SettingsModal::SteamGridDbKey:
+            if (const auto text = PromptSettingText("SteamGridDB API key",
+                                                    "From steamgriddb.com > Preferences > API",
+                                                    GetSteamGridDbKey(), 64)) {
+                // Spaces and line breaks sneak in when a key is pasted; a key never has them.
+                std::string key;
+                for (const char ch : *text) {
+                    if (!std::isspace(static_cast<unsigned char>(ch))) {
+                        key += ch;
+                    }
+                }
+                SetSteamGridDbKey(key);
+                SaveConfig();
+                ShowNotice(key.empty() ? "SteamGridDB key removed" : "SteamGridDB key saved", false);
+            }
             break;
         default:
             break;
@@ -2696,6 +2739,20 @@ private:
             return;
         }
         if (tab == Tab::Library) {
+            if (game_menu != GameMenu::None) {
+                // A row picks it; anywhere else closes the menu.
+                for (int r = 0; r < kGameMenuRows; ++r) {
+                    if (GameMenuRowRect(r).Contains(tx, ty)) {
+                        ChooseGameMenuRow(r);
+                        return;
+                    }
+                }
+                game_menu = GameMenu::None;
+                return;
+            }
+            if (game_moving) {
+                return; // Carried with the buttons; A drops it.
+            }
             const Grid grid = ComputeGrid();
             for (int i = 0; i < static_cast<int>(filtered.size()); ++i) {
                 int tile_x, tile_y;
@@ -3188,7 +3245,8 @@ private:
             if (focus == Focus::Content && !filtered.empty()) {
                 const GameEntry& game = games[filtered[static_cast<std::size_t>(selected)]];
                 title = game.title;
-                sub = std::string{SystemName(game.system)};
+                sub = game_moving ? std::string{"Moving: use the arrows, then A"}
+                                  : std::string{SystemName(game.system)};
             } else {
                 title = g_nickname;
                 sub = std::to_string(filtered.size()) + (filtered.size() == 1 ? " game" : " games");
@@ -3336,6 +3394,7 @@ private:
 
         // The + menu and the console game list fade in; the list's highlight and scroll glide.
         system_menu_anim = system_menu_open ? std::min(1.0f, system_menu_anim + dt / 0.16f) : 0.0f;
+        game_menu_anim = game_menu != GameMenu::None ? std::min(1.0f, game_menu_anim + dt / 0.16f) : 0.0f;
         if (system_games_open) {
             system_games_anim = std::min(1.0f, system_games_anim + dt / 0.24f);
             system_games_scroll.Step(system_games_top, dt, 320.0f, 34.0f);
@@ -3660,6 +3719,11 @@ private:
                 Skin::TileLook look = look_for(selected, x, y);
                 look.lift = lift.x;
                 look.dim = false;
+                if (game_moving) {
+                    // The carried game glides with the cursor to its new place.
+                    x = static_cast<int>(std::lround(cursor_x.x));
+                    y = static_cast<int>(std::lround(cursor_y.x));
+                }
                 DrawTile(c, games[filtered[static_cast<std::size_t>(selected)]], x, y, look);
                 if (content_focus) {
                     const float size = kTileW + (kTileFocus - kTileW) * lift.x;
@@ -3667,11 +3731,23 @@ private:
                                         cursor_y.x + kTileH / 2.0f - 3.0f * lift.x - size / 2, size, AnimTime(),
                                         std::clamp(lift.x * 1.6f, 0.0f, 1.0f) * look.appear);
                 }
+                if (game_moving) {
+                    bool left, right, up, down;
+                    GameMoveRoom(left, right, up, down);
+                    Skin::DrawMoveArrows(c, cursor_x.x, cursor_y.x - 3.0f * lift.x, static_cast<float>(kTileW),
+                                         AnimTime(), left, right, up, down);
+                }
             }
             DrawScrollbar(c, grid);
         }
         if (focus == Focus::Rail) {
             DrawRailHints(c);
+        } else if (game_moving) {
+            int hx = HintX();
+            const int hy = g_screen_h - 44;
+            hx += DrawHint(c, hx, hy, "D-Pad", "Move") + 22;
+            hx += DrawHint(c, hx, hy, "A", "Done") + 22;
+            DrawHint(c, hx, hy, "B", "Cancel");
         } else {
             int hx = HintX();
             const int hy = g_screen_h - 44;
@@ -3681,8 +3757,11 @@ private:
             if (IsPictureEditingEnabled()) {
                 hx += DrawHint(c, hx, hy, "L", "Picture") + 22;
             }
-            hx += DrawHint(c, hx, hy, "+", "Details") + 22;
+            hx += DrawHint(c, hx, hy, "+", "Menu") + 22;
             DrawHint(c, hx, hy, "+ -", "Exit");
+        }
+        if (game_menu != GameMenu::None) {
+            DrawGameMenu(c);
         }
     }
 
@@ -3783,6 +3862,490 @@ private:
         SaveConfig();
     }
 
+    // ---- Home: the + menu (Move Placement, Info) and the picture menu (SD Card, SteamGridDB) ----
+
+    enum class GameMenu { None, Actions, Picture };
+    GameMenu game_menu = GameMenu::None;
+    int game_menu_sel = 0;
+    float game_menu_anim = 0.0f;
+    // Carrying a game to a new place in its console's section.
+    bool game_moving = false;
+    std::vector<int> game_move_before; // `filtered` before the move
+    int game_move_selected_before = 0;
+    // The player's order of the games: path -> place. Games it doesn't list go after, by title.
+    std::unordered_map<std::string, int> game_rank;
+
+    static constexpr int kGameMenuRows = 2;
+    static constexpr int kGameMenuRowStep = 58;
+    static constexpr const char* kGameOrderPath = "sdmc:/switch/emuswitch/game_order.txt";
+
+    int GameRank(int game) const {
+        const auto it = game_rank.find(games[static_cast<std::size_t>(game)].path);
+        return it == game_rank.end() ? std::numeric_limits<int>::max() : it->second;
+    }
+
+    void LoadGameOrder() {
+        game_rank.clear();
+        FILE* f = std::fopen(kGameOrderPath, "rb");
+        if (!f) {
+            return;
+        }
+        char buf[1024];
+        int rank = 0;
+        while (std::fgets(buf, sizeof(buf), f)) {
+            std::string line = buf;
+            while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+                line.pop_back();
+            }
+            if (!line.empty()) {
+                game_rank.emplace(std::move(line), rank++);
+            }
+        }
+        std::fclose(f);
+    }
+
+    // Saves Home's order (the whole list: moving clears the search). Games that aren't here right
+    // now, say on a drive that's unplugged, keep their places after these.
+    void SaveGameOrder() {
+        std::vector<std::pair<int, std::string>> absent;
+        std::set<std::string> present;
+        for (const int i : filtered) {
+            present.insert(games[static_cast<std::size_t>(i)].path);
+        }
+        for (const auto& [path, rank] : game_rank) {
+            if (!present.count(path)) {
+                absent.emplace_back(rank, path);
+            }
+        }
+        std::sort(absent.begin(), absent.end());
+        game_rank.clear();
+        std::string text;
+        int rank = 0;
+        const auto add = [&](const std::string& path) {
+            game_rank[path] = rank++;
+            text += path;
+            text += '\n';
+        };
+        for (const int i : filtered) {
+            add(games[static_cast<std::size_t>(i)].path);
+        }
+        for (const auto& entry : absent) {
+            add(entry.second);
+        }
+        mkdir("sdmc:/switch", 0777);
+        mkdir("sdmc:/switch/emuswitch", 0777);
+        const std::string tmp = std::string{kGameOrderPath} + ".part";
+        FILE* f = std::fopen(tmp.c_str(), "wb");
+        if (!f) {
+            return;
+        }
+        const bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+        std::fclose(f);
+        if (ok) {
+            std::remove(kGameOrderPath);
+            std::rename(tmp.c_str(), kGameOrderPath);
+        } else {
+            std::remove(tmp.c_str());
+        }
+    }
+
+    void OpenGameMenu(GameMenu menu) {
+        game_menu = menu;
+        game_menu_sel = 0;
+        game_menu_anim = 0.0f;
+    }
+
+    void HandleGameMenu(u64 down, u32 nav) {
+        if (nav & DirUp) {
+            game_menu_sel = std::max(0, game_menu_sel - 1);
+        }
+        if (nav & DirDown) {
+            game_menu_sel = std::min(kGameMenuRows - 1, game_menu_sel + 1);
+        }
+        // The button that opened a menu closes it again.
+        const u64 closers =
+            HidNpadButton_B | (game_menu == GameMenu::Actions ? HidNpadButton_Plus : HidNpadButton_L);
+        if (down & HidNpadButton_A) {
+            ChooseGameMenuRow(game_menu_sel);
+        } else if (down & closers) {
+            game_menu = GameMenu::None;
+        }
+    }
+
+    void ChooseGameMenuRow(int row) {
+        const GameMenu menu = game_menu;
+        game_menu = GameMenu::None;
+        if (filtered.empty()) {
+            return;
+        }
+        const GameEntry game = games[filtered[static_cast<std::size_t>(selected)]];
+        if (menu == GameMenu::Actions) {
+            if (row == 0) {
+                BeginGameMove();
+            } else {
+                OpenDetails();
+            }
+        } else if (row == 0) {
+            PickGamePicture(game);
+        } else {
+            PickSteamGridPicture(game);
+        }
+    }
+
+    void OpenDetails() {
+        const GameEntry& game = games[filtered[static_cast<std::size_t>(selected)]];
+        details = GetTitleDetails(game);
+        details_customised = HasPerGameConfig(game.program_id);
+        details_open = true;
+    }
+
+    // The section the game at `filtered` index `i` is in.
+    const HomeSection* SectionAt(int i) const {
+        for (const HomeSection& section : home_sections) {
+            if (i >= section.first && i < section.first + section.count) {
+                return &section;
+            }
+        }
+        return nullptr;
+    }
+
+    // Picks the focused game up so the arrows move it around its console's section.
+    void BeginGameMove() {
+        if (filtered.empty()) {
+            return;
+        }
+        if (!search.empty()) {
+            // Games move within the whole list.
+            const std::string path = games[filtered[static_cast<std::size_t>(selected)]].path;
+            search.clear();
+            ApplyFilter();
+            for (int i = 0; i < static_cast<int>(filtered.size()); ++i) {
+                if (games[filtered[static_cast<std::size_t>(i)]].path == path) {
+                    selected = i;
+                    break;
+                }
+            }
+        }
+        game_move_before = filtered;
+        game_move_selected_before = selected;
+        game_moving = true;
+    }
+
+    // Whether the carried game can still go left, right, up or down in its section.
+    void GameMoveRoom(bool& left, bool& right, bool& up, bool& down) const {
+        left = right = up = down = false;
+        const HomeSection* section = SectionAt(selected);
+        if (!section || home_cols <= 0) {
+            return;
+        }
+        const int at = selected - section->first;
+        left = at > 0;
+        right = at < section->count - 1;
+        up = at / home_cols > 0;
+        down = at / home_cols < (section->count - 1) / home_cols;
+    }
+
+    void MoveGameTo(int target) {
+        const HomeSection* section = SectionAt(selected);
+        if (!section || target == selected || target < section->first ||
+            target >= section->first + section->count) {
+            return;
+        }
+        const int carried = filtered[static_cast<std::size_t>(selected)];
+        filtered.erase(filtered.begin() + selected);
+        filtered.insert(filtered.begin() + target, carried);
+        selected = target;
+        // The carried tile stays up; the ones it passes don't pop.
+        lift_index = selected;
+        lift_prev_index = -1;
+    }
+
+    void HandleGameMove(u64 down, u32 nav) {
+        bool left, right, up, dn;
+        GameMoveRoom(left, right, up, dn);
+        const HomeSection* section = SectionAt(selected);
+        if ((nav & DirLeft) && left) {
+            MoveGameTo(selected - 1);
+        } else if ((nav & DirRight) && right) {
+            MoveGameTo(selected + 1);
+        } else if ((nav & DirUp) && up) {
+            MoveGameTo(selected - home_cols);
+        } else if ((nav & DirDown) && dn && section) {
+            // Into a shorter last row, the carried game goes to its end.
+            MoveGameTo(std::min(selected + home_cols, section->first + section->count - 1));
+        }
+        if (down & (HidNpadButton_A | HidNpadButton_Plus)) {
+            FinishGameMove();
+        } else if (down & HidNpadButton_B) {
+            CancelGameMove();
+        }
+    }
+
+    void FinishGameMove() {
+        game_moving = false;
+        if (filtered == game_move_before) {
+            return;
+        }
+        SaveGameOrder();
+        ShowNotice(games[filtered[static_cast<std::size_t>(selected)]].title + " moved", false);
+    }
+
+    void CancelGameMove() {
+        filtered = game_move_before;
+        selected = game_move_selected_before;
+        lift_index = selected;
+        lift_prev_index = -1;
+        game_moving = false;
+    }
+
+    Rect GameMenuRect() const {
+        const int w = 420, h = 44 + kGameMenuRows * kGameMenuRowStep + 52;
+        return {(g_screen_w - w) / 2, (g_screen_h - h) / 2 - 20, w, h};
+    }
+    Rect GameMenuRowRect(int row) const {
+        const Rect p = GameMenuRect();
+        return {p.x + 16, p.y + 44 + row * kGameMenuRowStep, p.w - 32, 52};
+    }
+
+    void DrawGameMenu(Canvas& c) {
+        if (filtered.empty()) {
+            return;
+        }
+        const float e = EaseOut(game_menu_anim);
+        Skin::DrawScrim(c, 0.7f * e);
+        Canvas::FadeScope fade{c, e};
+        Canvas::OffsetScope rise{c, 0, static_cast<int>(std::lround(12.0f * (1.0f - e)))};
+        const Rect p = GameMenuRect();
+        Skin::DrawPanel(c, p.x, p.y, p.w, p.h, 22);
+        const GameEntry& game = games[filtered[static_cast<std::size_t>(selected)]];
+        const bool picture = game_menu == GameMenu::Picture;
+        const std::string heading = picture ? "Picture for " + game.title : game.title;
+        g_font.Draw(c, p.x + 24, p.y + 30, g_font.Truncate(heading, 16, p.w - 48), 16, kColTextDim);
+        static constexpr const char* kActionRows[kGameMenuRows] = {"Move Placement", "Info"};
+        static constexpr const char* kPictureRows[kGameMenuRows] = {"SD Card", "SteamGridDB"};
+        const bool no_key = picture && GetSteamGridDbKey().empty();
+        for (int r = 0; r < kGameMenuRows; ++r) {
+            const Rect row = GameMenuRowRect(r);
+            const bool on = r == game_menu_sel;
+            if (on) {
+                Skin::DrawRow(c, row.x, row.y, row.w, row.h, true);
+            }
+            g_font_bold.Draw(c, row.x + 24, CenterBaseline(row.y, row.h, 21), (picture ? kPictureRows : kActionRows)[r],
+                             21, on ? kColText : kColTextDim);
+            if (no_key && r == 1) {
+                const char* note = "Needs an API key";
+                g_font.Draw(c, row.x + row.w - 22 - g_font.Measure(note, 15), CenterBaseline(row.y, row.h, 15), note, 15,
+                            kColTextDim);
+            }
+        }
+        int hx = p.x + 24;
+        const int hy = p.y + p.h - 30;
+        hx += DrawHint(c, hx, hy, "A", "Select") + 22;
+        DrawHint(c, hx, hy, "B", "Close");
+    }
+
+    // ---- SteamGridDB: pictures for a game, searched by its name ------------------------------------
+
+    static constexpr int kSgCols = 4;
+    static constexpr int kSgCell = 176;
+    static constexpr int kSgGap = 16;
+    static constexpr int kSgTop = 118;
+    static constexpr const char* kSteamGridDir = "sdmc:/switch/emuswitch/steamgriddb";
+
+    int SteamGridRows() const {
+        return std::max(1, (ContentBottom() - 12 - kSgTop + kSgGap) / (kSgCell + kSgGap));
+    }
+
+    // Blocks while the player looks through what SteamGridDB has for `game`; the picture picked
+    // is saved and set.
+    void PickSteamGridPicture(const GameEntry& game) {
+        const std::string key = GetSteamGridDbKey();
+        if (key.empty()) {
+            ShowNotice("Add your SteamGridDB API key in Settings > Advanced first", true);
+            return;
+        }
+        using SteamGrid::Stage;
+        std::string term = SteamGrid::SearchTerm(game.title);
+        SteamGrid::Search(term, key);
+        SteamGrid::Results res;
+        int sel = 0;
+        int first_row = 0;
+        Repeater rep;
+        std::string saved;
+        while (appletMainLoop()) {
+            padUpdate(pad_state);
+            const u64 down = padGetButtonsDown(pad_state);
+            const HidAnalogStickState ls = padGetStickPos(pad_state, 0);
+            constexpr int dz = 12000;
+            const u32 nav = rep.Step((down & HidNpadButton_Up) || ls.y > dz, (down & HidNpadButton_Down) || ls.y < -dz,
+                                     (down & HidNpadButton_Left) || ls.x < -dz,
+                                     (down & HidNpadButton_Right) || ls.x > dz);
+            SteamGrid::Poll(res);
+            if (res.stage == Stage::Saved) {
+                saved = res.saved;
+                break;
+            }
+            const int count = static_cast<int>(res.pictures.size());
+            if (res.stage == Stage::Ready && count > 0) {
+                if ((nav & DirLeft) && sel > 0) {
+                    --sel;
+                }
+                if ((nav & DirRight) && sel < count - 1) {
+                    ++sel;
+                }
+                if ((nav & DirUp) && sel >= kSgCols) {
+                    sel -= kSgCols;
+                }
+                if ((nav & DirDown) && sel / kSgCols < (count - 1) / kSgCols) {
+                    sel = std::min(count - 1, sel + kSgCols);
+                }
+                const SteamGrid::Picture& pic = res.pictures[static_cast<std::size_t>(sel)];
+                if ((down & HidNpadButton_A) && pic.loaded && !pic.thumb.Empty()) {
+                    SteamGrid::Save(sel, std::string{kSteamGridDir} + "/" + Art::PictureStem(game));
+                }
+            }
+            sel = std::clamp(sel, 0, std::max(0, count - 1));
+            const int row = sel / kSgCols;
+            first_row = std::clamp(first_row, std::max(0, row - SteamGridRows() + 1), row);
+            if ((down & HidNpadButton_X) && res.stage != Stage::Saving) {
+                const std::optional<std::string> text = PromptSettingText("Search SteamGridDB", "Game name", term, 100);
+                if (text && !text->empty()) {
+                    term = *text;
+                    SteamGrid::Search(term, key);
+                    sel = 0;
+                    first_row = 0;
+                }
+            }
+            if (down & HidNpadButton_B) {
+                break;
+            }
+            PrepareFrame();
+            RenderFrame([&](Canvas& c) { DrawSteamGridPicker(c, term, res, sel, first_row); });
+        }
+        SteamGrid::Cancel();
+        if (saved.empty()) {
+            return;
+        }
+        ShowBusy("Loading picture...");
+        const std::string err = Art::SetGameArt(game, saved);
+        ShowNotice(err.empty() ? "Picture set for " + game.title : "Couldn't use that picture: " + err, !err.empty());
+    }
+
+    static std::string SteamGridShape(const SteamGrid::Picture& p) {
+        if (p.width > 0 && p.width == p.height) return "Square";
+        return p.height > p.width ? "Portrait" : "Wide";
+    }
+
+    // "no_logo" -> "No logo".
+    static std::string SteamGridStyle(std::string style) {
+        for (char& ch : style) {
+            if (ch == '_') ch = ' ';
+        }
+        if (!style.empty()) {
+            style[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(style[0])));
+        }
+        return style;
+    }
+
+    void DrawSteamGridPicker(Canvas& c, const std::string& term, const SteamGrid::Results& res, int sel,
+                             int first_row) {
+        using SteamGrid::Stage;
+        Skin::DrawBackdrop(c);
+        g_font.Draw(c, 40, 44, "SteamGridDB", 28, kColText);
+        const std::string sub = res.game.empty() ? "Searching for \"" + term + "\"" : "Pictures for " + res.game;
+        g_font.Draw(c, 40, 76, g_font.Truncate(sub, 20, g_screen_w - 80), 20, kColAccent);
+        c.FillRect(40, 96, g_screen_w - 80, 1, kColLine);
+
+        const int count = static_cast<int>(res.pictures.size());
+        const int pw = 400, px = g_screen_w - 40 - pw;
+        const int mid_y = (kSgTop + ContentBottom()) / 2;
+        const auto centred = [&](const std::string& text, int y, int size, u32 color) {
+            const std::string shown = g_font.Truncate(text, size, g_screen_w - 120);
+            g_font.Draw(c, (g_screen_w - g_font.Measure(shown, size)) / 2, y, shown, size, color);
+        };
+        if (res.stage == Stage::Searching || res.stage == Stage::Idle) {
+            Skin::DrawSpinner(c, g_screen_w / 2.0f, mid_y - 24.0f, 16.0f, AnimTime());
+            centred("Looking on SteamGridDB...", mid_y + 26, 20, kColTextDim);
+        } else if (res.stage == Stage::Failed) {
+            centred(res.error, mid_y, 20, kColError);
+        } else if (count == 0) {
+            centred("SteamGridDB has no pictures for " + res.game + " yet.", mid_y, 20, kColTextDim);
+            centred("Press X to search for another name.", mid_y + 32, 18, kColTextDim);
+        } else {
+            const int rows = SteamGridRows();
+            for (int i = first_row * kSgCols; i < std::min(count, (first_row + rows) * kSgCols); ++i) {
+                const int x = 40 + (i % kSgCols) * (kSgCell + kSgGap);
+                const int y = kSgTop + (i / kSgCols - first_row) * (kSgCell + kSgGap);
+                Skin::DrawPanel(c, x, y, kSgCell, kSgCell, 16);
+                const SteamGrid::Picture& p = res.pictures[static_cast<std::size_t>(i)];
+                const float cx = x + kSgCell / 2.0f, cy = y + kSgCell / 2.0f;
+                if (!p.loaded) {
+                    Skin::DrawSpinner(c, cx, cy, 12.0f, AnimTime());
+                } else if (p.thumb.Empty()) {
+                    const char* msg = "No preview";
+                    g_font.Draw(c, static_cast<int>(cx) - g_font.Measure(msg, 15) / 2, static_cast<int>(cy) + 5, msg, 15,
+                                kColTextDim);
+                } else {
+                    const float inner = kSgCell - 20.0f;
+                    const float k = std::min(inner / p.thumb.w, inner / p.thumb.h);
+                    const float dw = p.thumb.w * k, dh = p.thumb.h * k;
+                    c.DrawImageScaled(p.thumb, cx - dw / 2, cy - dh / 2, dw, dh, 10);
+                }
+                if (i == sel) {
+                    Skin::DrawFocusRing(c, x - 6.0f, y - 6.0f, kSgCell + 12.0f, AnimTime(), 1.0f);
+                }
+            }
+            const int total_rows = (count + kSgCols - 1) / kSgCols;
+            DrawListScrollbar(c, 40 + kSgCols * (kSgCell + kSgGap) - 4, kSgTop, rows, kSgCell + kSgGap, total_rows,
+                              first_row);
+
+            // The highlighted picture, bigger.
+            const SteamGrid::Picture& p = res.pictures[static_cast<std::size_t>(sel)];
+            const int ph = std::min(pw + 44, ContentBottom() - 8 - kSgTop);
+            Skin::DrawPanel(c, px, kSgTop, pw, ph, 22);
+            const int inner_w = pw - 40, inner_h = ph - 82;
+            const float cx = px + pw / 2.0f, cy = kSgTop + 20.0f + inner_h / 2.0f;
+            if (!p.loaded) {
+                Skin::DrawSpinner(c, cx, cy, 16.0f, AnimTime());
+            } else if (!p.thumb.Empty()) {
+                const float k = std::min(float(inner_w) / p.thumb.w, float(inner_h) / p.thumb.h);
+                const float dw = p.thumb.w * k, dh = p.thumb.h * k;
+                c.SoftShadow(static_cast<int>(cx - dw / 2), static_cast<int>(cy - dh / 2), static_cast<int>(dw),
+                             static_cast<int>(dh), 14, 16, 6, 0x90);
+                c.DrawImageScaled(p.thumb, cx - dw / 2, cy - dh / 2, dw, dh, 14);
+            }
+            std::string label = SteamGridShape(p);
+            if (p.width > 0) {
+                label += "  " + std::to_string(p.width) + " x " + std::to_string(p.height);
+            }
+            const std::string style = SteamGridStyle(p.style);
+            g_font_bold.Draw(c, static_cast<int>(cx) - g_font_bold.Measure(label, 18) / 2, kSgTop + ph - 44, label, 18,
+                             kColText);
+            if (!style.empty()) {
+                g_font.Draw(c, static_cast<int>(cx) - g_font.Measure(style, 16) / 2, kSgTop + ph - 20, style, 16,
+                            kColTextDim);
+            }
+            if (!res.error.empty()) {
+                centred(res.error, ContentBottom() - 2, 17, kColError);
+            }
+        }
+        if (res.stage == Stage::Saving) {
+            Skin::DrawScrim(c, 0.6f);
+            Skin::DrawSpinner(c, g_screen_w / 2.0f, mid_y - 20.0f, 16.0f, AnimTime());
+            centred("Saving picture...", mid_y + 30, 20, kColText);
+        }
+
+        int hx = 40;
+        const int hy = g_screen_h - 44;
+        if (res.stage == Stage::Ready && count > 0) {
+            hx += DrawHint(c, hx, hy, "A", "Use") + 22;
+        }
+        hx += DrawHint(c, hx, hy, "X", "Search") + 22;
+        DrawHint(c, hx, hy, "B", "Back");
+        const char* credit = "Pictures from SteamGridDB";
+        g_font.Draw(c, g_screen_w - 40 - g_font.Measure(credit, 15), hy + 5, credit, 15, kColTextDim);
+    }
+
     void PickGamePicture(const GameEntry& game) {
         const std::string title = "Picture for " + game.title;
         const std::optional<std::string> picked = BrowseForImage(title.c_str(), picture_dir);
@@ -3804,6 +4367,9 @@ private:
                 system_games.push_back(i);
             }
         }
+        // In the order Home shows them.
+        std::stable_sort(system_games.begin(), system_games.end(),
+                         [this](int a, int b) { return GameRank(a) < GameRank(b); });
         system_games_sel = 0;
         system_games_top = 0.0f;
         system_games_scroll.Snap(0.0f);

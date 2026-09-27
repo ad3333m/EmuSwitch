@@ -92,6 +92,10 @@ void SetCoverDownloadEnabled(bool enabled);
 std::string GetSystemsOrder();
 void SetSystemsOrder(const std::string& order);
 
+// The player's SteamGridDB API key (steamgriddb.com > Preferences > API), or empty.
+std::string GetSteamGridDbKey();
+void SetSteamGridDbKey(const std::string& key);
+
 // GitHub updater preferences.
 UpdateChannel GetUpdateChannel();
 void SetUpdateChannel(UpdateChannel channel);

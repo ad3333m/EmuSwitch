@@ -1153,7 +1153,63 @@ void Arrow(Canvas& c, float cx, float cy, float size, bool up, u32 color) {
     }
 }
 
+// A small antialiased triangle pointing `dir`: 0 up, 1 down, 2 left, 3 right.
+void Pointer(Canvas& c, float cx, float cy, float size, int dir, u32 color) {
+    const float hw = size, hh = size * 0.8f;
+    const bool across_x = dir < 2;
+    const float ex = across_x ? hw : hh / 2, ey = across_x ? hh / 2 : hw;
+    const int x0 = static_cast<int>(std::floor(cx - ex - 1)), x1 = static_cast<int>(std::ceil(cx + ex + 1));
+    const int y0 = static_cast<int>(std::floor(cy - ey - 1)), y1 = static_cast<int>(std::ceil(cy + ey + 1));
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            int hits = 0;
+            for (int sy = 0; sy < 4; ++sy) {
+                const float py = y + (sy + 0.5f) / 4.0f;
+                for (int sx = 0; sx < 4; ++sx) {
+                    const float px = x + (sx + 0.5f) / 4.0f;
+                    // From the base (0) to the tip (1), and the distance off the middle line.
+                    float along = 0.0f, off = 0.0f;
+                    switch (dir) {
+                    case 0:
+                        along = (cy + hh / 2 - py) / hh;
+                        off = px - cx;
+                        break;
+                    case 1:
+                        along = (py - (cy - hh / 2)) / hh;
+                        off = px - cx;
+                        break;
+                    case 2:
+                        along = (cx + hh / 2 - px) / hh;
+                        off = py - cy;
+                        break;
+                    default:
+                        along = (px - (cx - hh / 2)) / hh;
+                        off = py - cy;
+                        break;
+                    }
+                    if (along >= 0.0f && along <= 1.0f && std::fabs(off) <= hw * (1.0f - along)) {
+                        ++hits;
+                    }
+                }
+            }
+            if (hits > 0) {
+                c.Blend(x, y, color, static_cast<u8>(hits * 255 / 16));
+            }
+        }
+    }
+}
+
 } // namespace
+
+void DrawMoveArrows(Canvas& c, float x, float y, float w, float t, bool left, bool right, bool up, bool down) {
+    // In the gaps between the tiles, clear of the focus ring round the lifted tile, bobbing a little.
+    const float gap = 16.5f + 0.8f * std::sin(t * 6.0f);
+    const float cx = x + w / 2.0f, cy = y + w / 2.0f;
+    if (up) Pointer(c, cx, y - gap, 9.0f, 0, kColAccent);
+    if (down) Pointer(c, cx, y + w + gap, 9.0f, 1, kColAccent);
+    if (left) Pointer(c, x - gap, cy, 9.0f, 2, kColAccent);
+    if (right) Pointer(c, x + w + gap, cy, 9.0f, 3, kColAccent);
+}
 
 void DrawSystemsCarousel(Canvas& c, const Fonts& f, const std::vector<SystemCard>& cards, float anim, int selected,
                          const CarouselText& text, u32 accent, float t) {

@@ -76,6 +76,7 @@ bool s_menu_input_rotated = false;
 bool s_picture_editing = true;
 bool s_cover_download = true;
 std::string s_systems_order;
+std::string s_steamgriddb_key;
 int s_ds_screen_layout = 0;
 int s_ds_screen_gap = 0;
 
@@ -259,6 +260,7 @@ private:
         s_last_seen_version =
             Common::StripSpaces(config->Get("Switch", "last_seen_version", ""));
         s_systems_order = Common::StripSpaces(config->Get("Switch", "systems_order", ""));
+        s_steamgriddb_key = Common::StripSpaces(config->Get("Switch", "steamgriddb_key", ""));
 
         // Each control stores the index of the physical Switch button it drives.
         for (int i = 0; i < SwitchFrontend::NumMappableControls; ++i) {
@@ -353,6 +355,8 @@ private:
             out += "launch_count = " + std::to_string(launch_count) + '\n';
             out += "# Order of the consoles on the Systems page and the Home screen.\n";
             out += "systems_order = " + s_systems_order + '\n';
+            out += "# SteamGridDB API key (Settings > Advanced), for game pictures from SteamGridDB.\n";
+            out += "steamgriddb_key = " + s_steamgriddb_key + '\n';
             out += "# Which one-time default changes this config has had.\n";
             out += "defaults_version = " + std::to_string(defaults_version) + '\n';
             const SwitchFrontend::CustomScreenLayout layout = SwitchFrontend::GetCustomScreenLayout();
@@ -585,6 +589,14 @@ std::string GetSystemsOrder() {
 
 void SetSystemsOrder(const std::string& order) {
     s_systems_order = order;
+}
+
+std::string GetSteamGridDbKey() {
+    return s_steamgriddb_key;
+}
+
+void SetSteamGridDbKey(const std::string& key) {
+    s_steamgriddb_key = key;
 }
 
 int GetDsScreenLayout() {

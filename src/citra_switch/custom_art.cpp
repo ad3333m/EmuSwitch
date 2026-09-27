@@ -696,6 +696,14 @@ std::string SetGameArt(const GameEntry& game, const std::string& image_path) {
     return "";
 }
 
+std::string DecodePicture(const std::string& path, int longest, Gfx::Image& out) {
+    return Decode(path, Fit{longest, longest}, true, out);
+}
+
+std::string PictureStem(const GameEntry& game) {
+    return CoverStem(game);
+}
+
 void RequestPreview(const std::string& path) {
     std::lock_guard lock{g_mutex};
     if (g_preview_want == path) return;

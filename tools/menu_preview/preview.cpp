@@ -84,6 +84,27 @@ Image LoadPng(const std::string& path) {
     return img;
 }
 
+// Stand-in for a SteamGridDB picture: a poster in two colours with a title on it.
+Image FakeGrid(Font& bold, Font& regular, int w, int h, u32 top, u32 bottom) {
+    Canvas c;
+    c.Resize(w, h);
+    for (int y = 0; y < h; ++y) {
+        c.FillRect(0, y, w, 1, Canvas::Mix(top, bottom, float(y) / float(h - 1)));
+    }
+    const int big = w / 3;
+    bold.Draw(c, (w - bold.Measure("MK7", big)) / 2, h / 2 + big / 4, "MK7", big, MakeColor(0xFF, 0xFF, 0xFF));
+    const int small = std::max(12, w / 14);
+    regular.Draw(c, (w - regular.Measure("MARIO KART 7", small)) / 2, h / 2 + big / 4 + small * 2, "MARIO KART 7",
+                 small, MakeColor(0xFF, 0xFF, 0xFF, 0xD0));
+    Image img;
+    img.w = w;
+    img.h = h;
+    img.px.assign(c.Data(), c.Data() + std::size_t(w) * h);
+    for (u32& p : img.px) p |= 0xFF000000u;
+    img.opaque = true;
+    return img;
+}
+
 struct FakeGame {
     std::string title, badge;
     u32 color;
@@ -213,18 +234,27 @@ int main(int argc, char** argv) {
         }
         it->games.push_back(static_cast<int>(i));
     }
-    auto home = [&](Canvas& c, int selected, bool dock_focus, float t, float lift, float appear, float scroll = 0.0f) {
+    auto home = [&](Canvas& c, int selected, bool dock_focus, float t, float lift, float appear, float scroll = 0.0f,
+                    bool moving = false) {
         Skin::DrawBackdrop(c);
-        Skin::TopBar bar{dock_focus ? "gd_adv" : games[selected].title, dock_focus ? "" : "Nintendo 3DS", "03:02", "PM", 76, true};
+        // Kept in a named string: the bar only views its text.
+        const std::string title = dock_focus ? std::string{"gd_adv"} : games[selected].title;
+        Skin::TopBar bar{title, dock_focus ? "" : moving ? "Moving: use the arrows, then A" : "Nintendo 3DS", "03:02", "PM",
+                         76, true};
         Skin::DrawTopBar(c, f, bar);
         const Skin::Grid grid = Skin::ComputeGrid(c.Width(), c.Height());
         const int used_w = grid.cols * kTileW + (grid.cols - 1) * kTileGap;
         const int view_top = kContentTop + 4;
         Skin::DrawDock(c, f, dock, {0, dock_focus ? 1 : 0, dock_focus, dock_focus ? 1.0f : 0.0f, dock_focus ? 1.0f : 0.0f, t});
-        hints(c, {{"A", "Play"}, {"X", "Search"}, {"L", "Picture"}}, {{"+", "Details"}, {"+ -", "Exit"}});
+        if (moving) {
+            hints(c, {{"D-Pad", "Move"}, {"A", "Done"}, {"B", "Cancel"}}, {});
+        } else {
+            hints(c, {{"A", "Play"}, {"X", "Search"}, {"L", "Picture"}}, {{"+", "Menu"}, {"+ -", "Exit"}});
+        }
         Canvas::ClipScope clip{c, 0, kContentTop - 20, c.Width(), c.Height() - kHintH - 16 - (kContentTop - 20)};
         float y = 0.0f;
         int sel_x = 0, sel_y = 0;
+        bool room_left = false, room_right = false;
         for (const Section& sec : sections) {
             const int hy = static_cast<int>(view_top + y - scroll);
             Skin::DrawSectionHeader(c, f, {sec.id, sec.badge, sec.color}, sec.name,
@@ -241,6 +271,8 @@ int main(int argc, char** argv) {
                 if (i == selected && !dock_focus) {
                     sel_x = gx;
                     sel_y = gy;
+                    room_left = k > 0;
+                    room_right = k + 1 < sec.games.size();
                     continue;
                 }
                 Skin::DrawTile(c, f, tile_info(i), gx, gy, {0.0f, stagger, t, dock_focus});
@@ -251,6 +283,9 @@ int main(int argc, char** argv) {
             Skin::DrawTile(c, f, tile_info(selected), sel_x, sel_y, {lift, 1.0f, t, false});
             const float s = kTileW + (kTileFocus - kTileW) * lift;
             Skin::DrawFocusRing(c, sel_x + kTileW / 2.0f - s / 2, sel_y + kTileH / 2.0f - s / 2 - 3 * lift, s, t, 1.0f);
+            if (moving) {
+                Skin::DrawMoveArrows(c, float(sel_x), sel_y - 3 * lift, float(kTileW), t, room_left, room_right, false, false);
+            }
         }
     };
 
@@ -405,6 +440,101 @@ int main(int argc, char** argv) {
         Skin::DrawSpinner(v, cx, cy + 212.0f, 13.0f, 0.6f);
     });
     SavePng(c, out + "/loading.png");
+
+    // The + menu on a game (Move Placement, Info) and the picture menu (SD Card, SteamGridDB).
+    auto game_menu = [&](Canvas& v, const std::string& heading, const char* row0, const char* row1, int sel,
+                         const char* note) {
+        home(v, 5, false, 1.3f, 1.0f, 1.0f);
+        Skin::DrawScrim(v, 0.7f);
+        const int w = 420, h = 44 + 2 * 58 + 52, x = (v.Width() - w) / 2, y = (v.Height() - h) / 2 - 20;
+        Skin::DrawPanel(v, x, y, w, h, 22);
+        regular.Draw(v, x + 24, y + 30, heading, 16, Skin::Palette::kColTextDim);
+        const char* rows[] = {row0, row1};
+        for (int r = 0; r < 2; ++r) {
+            const int ry = y + 44 + r * 58;
+            if (r == sel) Skin::DrawRow(v, x + 16, ry, w - 32, 52, true);
+            bold.Draw(v, x + 40, CenterBaseline(ry, 52, 21), rows[r], 21,
+                      r == sel ? Skin::Palette::kColText : Skin::Palette::kColTextDim);
+            if (note && r == 1) {
+                regular.Draw(v, x + w - 38 - regular.Measure(note, 15), CenterBaseline(ry, 52, 15), note, 15,
+                             Skin::Palette::kColTextDim);
+            }
+        }
+        int hx = x + 24;
+        hx += Skin::DrawHint(v, f, hx, y + h - 30, "A", "Select") + 22;
+        Skin::DrawHint(v, f, hx, y + h - 30, "B", "Close");
+    };
+    Skin::SetAmbient(red);
+    for (int i = 0; i < 6; ++i) Frame(c, 16.0, [&](Canvas& v) { game_menu(v, "Mario Kart 7", "Move Placement", "Info", 0, nullptr); });
+    SavePng(c, out + "/home_game_menu.png");
+    for (int i = 0; i < 6; ++i) Frame(c, 16.5, [&](Canvas& v) {
+        game_menu(v, "Picture for Mario Kart 7", "SD Card", "SteamGridDB", 1, "Needs an API key");
+    });
+    SavePng(c, out + "/home_picture_menu.png");
+    // A game being carried to a new place in its section.
+    for (int i = 0; i < 6; ++i) Frame(c, 17.0, [&](Canvas& v) { home(v, 3, false, 1.3f, 1.0f, 1.0f, 0.0f, true); });
+    SavePng(c, out + "/home_move.png");
+
+    // The SteamGridDB picker. The pictures are stand-ins; the real ones come from steamgriddb.com.
+    {
+        struct Look {
+            int w, h;
+            u32 a, b;
+            const char* size;
+            const char* style;
+        };
+        const Look looks[] = {
+            {360, 360, MakeColor(0xE8, 0x2B, 0x2B), MakeColor(0x6B, 0x0F, 0x1A), "Square  1024 x 1024", "Alternate"},
+            {360, 360, MakeColor(0x2B, 0x8C, 0xE8), MakeColor(0x0E, 0x2A, 0x5C), "Square  512 x 512", "No logo"},
+            {360, 360, MakeColor(0xF5, 0xB7, 0x2B), MakeColor(0x8A, 0x3C, 0x0B), "Square  1024 x 1024", "Alternate"},
+            {240, 360, MakeColor(0x1F, 0xB5, 0x6A), MakeColor(0x0A, 0x3D, 0x26), "Portrait  600 x 900", "Alternate"},
+            {240, 360, MakeColor(0x9B, 0x5C, 0xF6), MakeColor(0x2E, 0x14, 0x5C), "Portrait  600 x 900", "Blurred"},
+            {240, 360, MakeColor(0x3A, 0x3A, 0x44), MakeColor(0x0C, 0x0C, 0x10), "Portrait  600 x 900", "White logo"},
+            {240, 360, MakeColor(0xE8, 0x5B, 0xA0), MakeColor(0x5C, 0x12, 0x38), "Portrait  600 x 900", "Material"},
+            {240, 360, MakeColor(0x2D, 0xD4, 0xBF), MakeColor(0x0B, 0x4A, 0x42), "Portrait  660 x 930", "Alternate"},
+        };
+        std::vector<Image> pics;
+        for (const Look& l : looks) pics.push_back(FakeGrid(bold, regular, l.w, l.h, l.a, l.b));
+        const int sel = 1;
+        for (int i = 0; i < 4; ++i) Frame(c, 18.0, [&](Canvas& v) {
+            using namespace Skin::Palette;
+            Skin::DrawBackdrop(v);
+            regular.Draw(v, 40, 44, "SteamGridDB", 28, kColText);
+            regular.Draw(v, 40, 76, "Pictures for Mario Kart 7", 20, kColAccent);
+            v.FillRect(40, 96, v.Width() - 80, 1, kColLine);
+            constexpr int cols = 4, cell = 176, gap = 16, top = 118;
+            const int content_bottom = v.Height() - kHintH;
+            for (int k = 0; k < static_cast<int>(pics.size()); ++k) {
+                const int x = 40 + (k % cols) * (cell + gap), y = top + (k / cols) * (cell + gap);
+                Skin::DrawPanel(v, x, y, cell, cell, 16);
+                const Image& p = pics[static_cast<std::size_t>(k)];
+                const float inner = cell - 20.0f, s = std::min(inner / p.w, inner / p.h);
+                const float dw = p.w * s, dh = p.h * s, cx = x + cell / 2.0f, cy = y + cell / 2.0f;
+                v.DrawImageScaled(p, cx - dw / 2, cy - dh / 2, dw, dh, 10);
+                if (k == sel) Skin::DrawFocusRing(v, x - 6.0f, y - 6.0f, cell + 12.0f, 0.4f, 1.0f);
+            }
+            const int pw = 400, px = v.Width() - 40 - pw, ph = std::min(pw + 44, content_bottom - 8 - top);
+            Skin::DrawPanel(v, px, top, pw, ph, 22);
+            const Image& p = pics[sel];
+            const int inner_w = pw - 40, inner_h = ph - 82;
+            const float cx = px + pw / 2.0f, cy = top + 20.0f + inner_h / 2.0f;
+            const float s = std::min(float(inner_w) / p.w, float(inner_h) / p.h);
+            const float dw = p.w * s, dh = p.h * s;
+            v.SoftShadow(int(cx - dw / 2), int(cy - dh / 2), int(dw), int(dh), 14, 16, 6, 0x90);
+            v.DrawImageScaled(p, cx - dw / 2, cy - dh / 2, dw, dh, 14);
+            bold.Draw(v, int(cx) - bold.Measure(looks[sel].size, 18) / 2, top + ph - 44, looks[sel].size, 18, kColText);
+            regular.Draw(v, int(cx) - regular.Measure(looks[sel].style, 16) / 2, top + ph - 20, looks[sel].style, 16,
+                         kColTextDim);
+            int hx = 40;
+            const int hy = v.Height() - 44;
+            hx += Skin::DrawHint(v, f, hx, hy, "A", "Use") + 22;
+            hx += Skin::DrawHint(v, f, hx, hy, "X", "Search") + 22;
+            Skin::DrawHint(v, f, hx, hy, "B", "Back");
+            const char* credit = "Pictures from SteamGridDB";
+            regular.Draw(v, v.Width() - 40 - regular.Measure(credit, 15), hy + 5, credit, 15, kColTextDim);
+        });
+        SavePng(c, out + "/steamgriddb.png");
+    }
 
     // Timing: the home screen, single-threaded bands versus the pool.
     auto bench = [&](bool parallel) {

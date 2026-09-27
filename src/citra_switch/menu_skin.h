@@ -146,6 +146,8 @@ void DrawTile(Canvas& c, const Fonts& f, const TileInfo& t, int x, int y, const 
 void DrawEmptySlot(Canvas& c, int x, int y, float alpha);
 // The cursor ring around a (w x w) square at (x, y); it glides between tiles.
 void DrawFocusRing(Canvas& c, float x, float y, float w, float t, float alpha);
+// Arrows around a (w x w) square being moved, on the sides it can still go.
+void DrawMoveArrows(Canvas& c, float x, float y, float w, float t, bool left, bool right, bool up, bool down);
 // The colour a tile's picture is mostly made of, for the glow and the backdrop.
 u32 TileAccent(const TileInfo& t);
 // The focused game's name in a pill under the grid.

@@ -1281,6 +1281,14 @@ void BuildAdvanced(std::vector<SettingEntry>& out) {
     t << PersistedModal({"Log Filter", "Which subsystems log, and at what level."},
                         SettingsModal::LogFilter, v.log_filter,
                         [] { return Settings::values.log_filter.GetValue(); });
+
+    // Last on the page.
+    t.Group("SteamGridDB");
+    t << Modal({"SteamGridDB API Key",
+                "Lets you pick game pictures from SteamGridDB. Get a key at steamgriddb.com under "
+                "Preferences > API."},
+               SettingsModal::SteamGridDbKey,
+               [] { return std::string{GetSteamGridDbKey().empty() ? "Not set" : "Set"}; });
 }
 
 std::vector<SettingEntry> BuildRegistry() {

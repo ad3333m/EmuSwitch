@@ -52,6 +52,13 @@ void StopLoading();
 std::string SetSystemArt(const std::string& id, const std::string& image_path);
 std::string SetGameArt(const GameEntry& game, const std::string& image_path);
 
+// Decodes a picture file (PNG, JPEG or WebP) to fit within a `longest` square. Safe to call
+// from any thread. Returns an error message, or empty on success.
+std::string DecodePicture(const std::string& path, int longest, Gfx::Image& out);
+// What pictures saved for `game` are named, without the extension: its file's name, or the
+// title ID for a title installed on the emulated SD card.
+std::string PictureStem(const GameEntry& game);
+
 // The picture picker's preview: ask for a file, then collect it (decoded in the background).
 void RequestPreview(const std::string& path);
 // True once the preview for `path` is ready; `img` is empty and `error` set if it can't be read.

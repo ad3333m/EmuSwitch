@@ -66,6 +66,7 @@ enum class SettingsModal {
     InstallFriendCodeSeed,
     InstallOtp,
     InstallMovable,
+    SteamGridDbKey,
 };
 
 namespace EntryFlag {
