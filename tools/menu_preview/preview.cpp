@@ -112,7 +112,8 @@ int main(int argc, char** argv) {
 
     auto home = [&](Canvas& c, int selected, bool dock_focus, float t) {
         Skin::DrawBackdrop(c);
-        Skin::TopBar bar{"gd_adv", "", "03:02", "PM", 76, true};
+        // The focused game's name sits in the profile bar.
+        Skin::TopBar bar{dock_focus ? "gd_adv" : games[selected].title, dock_focus ? "" : "Nintendo 3DS", "03:02", "PM", 76, true};
         Skin::DrawTopBar(c, f, bar);
         const Skin::Grid grid = Skin::ComputeGrid(c.Width(), c.Height());
         for (int i = 0; i < grid.cols * grid.visible_rows; ++i) {
@@ -139,8 +140,6 @@ int main(int argc, char** argv) {
             Skin::DrawTile(c, f, ti, grid.start_x + (selected % grid.cols) * (kTileW + kTileGap),
                            grid.top + (selected / grid.cols) * (kTileH + kTileGap), true, true, t);
         }
-        const int pill_y = grid.top + grid.visible_rows * (kTileH + kTileGap) - kTileGap + 12;
-        Skin::DrawTitlePill(c, f, pill_y, games[selected].title, "Nintendo 3DS", games[selected].color);
         Skin::DrawDock(c, f, dock, 0, dock_focus ? 1 : 0, dock_focus);
         hints(c, {{"-", "Rescan"}, {"L", "Picture"}}, {{"+", "Details"}, {"A", "Play"}});
     };

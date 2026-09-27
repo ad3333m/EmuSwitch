@@ -252,9 +252,11 @@ Grid ComputeGrid(int screen_w, int screen_h) {
     g.cols = std::max(1, (avail + kTileGap) / (kTileW + kTileGap));
     const int used = g.cols * kTileW + (g.cols - 1) * kTileGap;
     g.start_x = (screen_w - used) / 2;
-    g.top = kContentTop;
-    // Leave room under the grid for the title pill.
-    g.visible_rows = std::max(1, (screen_h - kHintH - g.top - 52 + kTileGap) / (kTileH + kTileGap));
+    // Between the profile bar and the dock's label bubble, centred.
+    const int avail_h = screen_h - kHintH - 44 - kContentTop;
+    g.visible_rows = std::max(1, (avail_h + kTileGap) / (kTileH + kTileGap));
+    const int grid_h = g.visible_rows * (kTileH + kTileGap) - kTileGap;
+    g.top = kContentTop + std::max(0, (avail_h - grid_h) / 2);
     return g;
 }
 
@@ -462,24 +464,22 @@ void DrawSystemsCarousel(Canvas& c, const Fonts& f, const std::vector<SystemCard
                          std::string_view name, std::string_view detail, std::string_view status, bool status_ok) {
     if (cards.empty()) return;
     const SystemCard& sel = cards[std::clamp(selected, 0, int(cards.size()) - 1)];
-    const float mid_y = kContentTop + (c.Height() - kHintH - kContentTop) / 2.0f;
+    const float mid_y = kContentTop + (c.Height() - kHintH - 44 - kContentTop) / 2.0f;
     // Big tinted controller on the left.
-    for (int i = 5; i >= 1; --i) Disc(c, 200, mid_y, 70.0f + i * 18, Alpha(sel.color, u8(6)));
-    DrawGamepad(c, 200, mid_y, 210, sel.color, 15);
+    for (int i = 5; i >= 1; --i) Disc(c, 210, mid_y, 70.0f + i * 18, Alpha(sel.color, u8(6)));
+    DrawGamepad(c, 210, mid_y, 210, sel.color, 15);
 
-    const float big = 250, small = 120, cx = 520;
-    const int clip_top = kContentTop - 20, clip_bottom = c.Height() - kHintH + 4;
+    // The focused card and one neighbour each side, sized to fit between the bars.
+    const float big = 204, small = 96, cx = 510;
     for (int i = 0; i < int(cards.size()); ++i) {
         const float off = i - anim;
-        if (std::fabs(off) > 3.2f) continue;
+        if (std::fabs(off) > 1.6f) continue;
         const float k = std::max(0.0f, 1.0f - std::fabs(off));
         const float size = small + (big - small) * k;
-        const float step1 = big / 2 + 24 + small / 2;
-        float y;
-        if (off >= 0) y = mid_y + step1 * std::min(1.0f, off) + std::max(0.0f, off - 1) * (small + 22);
-        else y = mid_y - step1 * std::min(1.0f, -off) - std::max(0.0f, -off - 1) * (small + 22);
-        const int x = int(cx - big / 2), yy = int(y - size / 2), sz = int(size), r = int(size * 0.12f);
-        if (yy + sz < clip_top || yy > clip_bottom) continue;
+        const float step1 = big / 2 + 18 + small / 2;
+        const float y = mid_y + step1 * std::clamp(off, -1.0f, 1.0f) + (std::fabs(off) > 1 ? (off > 0 ? 1 : -1) * (std::fabs(off) - 1) * (small + 18) : 0.0f);
+        const int x = int(cx - size / 2), yy = int(y - size / 2), sz = int(size), r = int(size * 0.12f);
+        if (yy < kContentTop - 4 || yy + sz > c.Height() - kHintH - 40) continue;
         c.SoftShadow(x, yy, sz, sz, r, 10, 6, u8(0x80 + 0x40 * k));
         const SystemCard& card = cards[i];
         c.FillRoundGradient(x, yy, sz, sz, r, Canvas::Mix(card.color, MakeColor(0xFF, 0xF4, 0xEC), 0.15f),
@@ -508,7 +508,7 @@ void DrawSystemsCarousel(Canvas& c, const Fonts& f, const std::vector<SystemCard
             c.RingRoundAAWith(x - 5, yy - 5, sz + 10, sz + 10, r + 5, 3.5f, [](float p) { return RingAt(p); });
     }
     // Name, game count and status beside the focused card.
-    const int tx = int(cx + big / 2 + 40);
+    const int tx = int(cx + big / 2 + 48);
     f.bold->Draw(c, tx, int(mid_y - 16), f.bold->Truncate(name, 40, c.Width() - tx - 40), 40, kColText);
     f.regular->Draw(c, tx, int(mid_y + 22), detail, 19, kColTextDim);
     Disc(c, tx + 6.0f, mid_y + 52, 5.0f, status_ok ? MakeColor(0x6E, 0xE7, 0xB7) : MakeColor(0xFF, 0xCE, 0x78));
