@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "common/common_types.h"
@@ -200,6 +201,12 @@ private:
     vk::DescriptorSet overlay_descriptor_set{};
     float overlay_game_fps = 0.0f;
     std::chrono::steady_clock::time_point overlay_last_update{};
+    // The quick menu's open animation (0..1), its gliding highlight (in rows) and the page it
+    // was on, so a page change doesn't glide.
+    float quick_menu_open = 0.0f;
+    float quick_menu_highlight = -1.0f;
+    std::string quick_menu_title;
+    std::chrono::steady_clock::time_point quick_menu_last{};
     // Keeps the shader-compile notice on screen for a short tail after the last build so
     // one can actually read it.
     std::chrono::steady_clock::time_point shader_notice_until{};

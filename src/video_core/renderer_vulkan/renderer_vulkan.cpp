@@ -30,6 +30,7 @@
 #include "video_core/renderer_vulkan/overlay_font.h"
 
 #include <algorithm>
+#include <cctype>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -1674,6 +1675,54 @@ public:
                  OverlayFont::kWhiteV);
     }
 
+    // A rectangle with rounded, antialiased corners of radius `r`.
+    void AddRoundRect(float x0, float y0, float x1, float y1, float r) {
+        r = std::clamp(r, 0.0f, std::min(x1 - x0, y1 - y0) / 2.0f);
+        if (r < 0.5f) {
+            AddRect(x0, y0, x1, y1);
+            return;
+        }
+        AddRect(x0, y0 + r, x1, y1 - r);
+        AddRect(x0 + r, y0, x1 - r, y0 + r);
+        AddRect(x0 + r, y1 - r, x1 - r, y1);
+        AddCorners(x0, y0, x1, y1, r, OverlayFont::kCornerU, OverlayFont::kCornerV, true, true);
+    }
+
+    // The same with only the top corners rounded (a band across the top of a panel).
+    void AddRoundRectTop(float x0, float y0, float x1, float y1, float r) {
+        r = std::clamp(r, 0.0f, std::min(x1 - x0, y1 - y0) / 2.0f);
+        AddRect(x0, y0 + r, x1, y1);
+        AddRect(x0 + r, y0, x1 - r, y0 + r);
+        AddCorners(x0, y0, x1, y1, r, OverlayFont::kCornerU, OverlayFont::kCornerV, true, false);
+    }
+
+    // A hairline around a rounded rectangle.
+    void AddRoundRing(float x0, float y0, float x1, float y1, float r) {
+        r = std::clamp(r, 1.0f, std::min(x1 - x0, y1 - y0) / 2.0f);
+        const float t = std::max(1.0f, r * OverlayFont::kRingThickness);
+        AddRect(x0 + r, y0, x1 - r, y0 + t);
+        AddRect(x0 + r, y1 - t, x1 - r, y1);
+        AddRect(x0, y0 + r, x0 + t, y1 - r);
+        AddRect(x1 - t, y0 + r, x1, y1 - r);
+        AddCorners(x0, y0, x1, y1, r, OverlayFont::kRingU, OverlayFont::kRingV, true, true);
+    }
+
+    // A soft shadow for a rounded rectangle: solid under it, fading out over `spread` beyond.
+    void AddShadow(float x0, float y0, float x1, float y1, float r, float spread) {
+        r = std::clamp(r, 0.0f, std::min(x1 - x0, y1 - y0) / 2.0f);
+        const float e = r + spread;
+        const float ix0 = x0 + r, iy0 = y0 + r, ix1 = x1 - r, iy1 = y1 - r;
+        const float su = OverlayFont::kShadowU, sv = OverlayFont::kShadowV;
+        const float ru = OverlayFont::kShapeRadiusU, rv = OverlayFont::kShapeRadiusV;
+        AddRect(ix0, iy0, ix1, iy1);
+        // The edges fade along one axis, from the shape's centre line.
+        PushQuad(ix0, iy0 - e, ix1, iy0, su, sv + rv, su, sv);
+        PushQuad(ix0, iy1, ix1, iy1 + e, su, sv, su, sv + rv);
+        PushQuad(ix0 - e, iy0, ix0, iy1, su + ru, sv, su, sv);
+        PushQuad(ix1, iy0, ix1 + e, iy1, su, sv, su + ru, sv);
+        AddCorners(ix0 - e, iy0 - e, ix1 + e, iy1 + e, e, su, sv, true, true);
+    }
+
     // Width in output pixels that a string occupies.
     static float Measure(std::string_view text, float scale) {
         float width = 0.0f;
@@ -1699,6 +1748,21 @@ public:
 
 private:
     static constexpr int kFloatsPerVertex = 4;
+
+    // The corners of the rectangle (x0, y0)-(x1, y1), `r` across, from the baked shape centred at
+    // (cu, cv): each quad puts the shape's centre on the rounded corner's centre.
+    void AddCorners(float x0, float y0, float x1, float y1, float r, float cu, float cv, bool top,
+                    bool bottom) {
+        const float ru = OverlayFont::kShapeRadiusU, rv = OverlayFont::kShapeRadiusV;
+        if (top) {
+            PushQuad(x0, y0, x0 + r, y0 + r, cu + ru, cv + rv, cu, cv);
+            PushQuad(x1 - r, y0, x1, y0 + r, cu, cv + rv, cu + ru, cv);
+        }
+        if (bottom) {
+            PushQuad(x0, y1 - r, x0 + r, y1, cu + ru, cv, cu, cv + rv);
+            PushQuad(x1 - r, y1 - r, x1, y1, cu, cv, cu + ru, cv + rv);
+        }
+    }
 
     void PushQuad(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1) {
         const std::array<float, 2> tl = Project(x0, y0);
@@ -1798,8 +1862,8 @@ OverlayDraw RendererVulkan::PrepareFpsOverlay(const Layout::FramebufferLayout& l
 
     const float text_w = OverlayBuilder::Measure(text, scale);
 
-    builder.AddRect(margin - pad, margin + ink_top * scale - pad, margin + text_w + pad,
-                    margin + ink_bottom * scale + pad);
+    builder.AddRoundRect(margin - pad, margin + ink_top * scale - pad, margin + text_w + pad,
+                         margin + ink_bottom * scale + pad, pad);
     const u32 box_vertices = builder.VertexCount();
 
     builder.AddText(margin, margin, text, scale);
@@ -1872,8 +1936,8 @@ OverlayDraw RendererVulkan::PrepareShaderNotice(const Layout::FramebufferLayout&
     const float ox = margin;
     const float oy = h - margin - pad - ink_bottom * scale;
 
-    builder.AddRect(ox - pad, oy + ink_top * scale - pad, ox + text_w + pad,
-                    oy + ink_bottom * scale + pad);
+    builder.AddRoundRect(ox - pad, oy + ink_top * scale - pad, ox + text_w + pad,
+                         oy + ink_bottom * scale + pad, pad);
     const u32 box_vertices = builder.VertexCount();
 
     builder.AddText(ox, oy, text, scale);
@@ -1931,34 +1995,98 @@ OverlayDraw RendererVulkan::PrepareToast(const Layout::FramebufferLayout& layout
     const float ox = std::round((w - text_w) / 2.0f);
     const float oy = h - margin - pad - ink_bottom * scale;
 
-    builder.AddRect(ox - pad, oy + ink_top * scale - pad, ox + text_w + pad,
-                    oy + ink_bottom * scale + pad);
-    const u32 box_vertices = builder.VertexCount();
+    // A glass pill like the launcher's notices: a soft shadow, the body and a fine edge.
+    const float bx0 = ox - pad * 1.6f, by0 = oy + ink_top * scale - pad;
+    const float bx1 = ox + text_w + pad * 1.6f, by1 = oy + ink_bottom * scale + pad;
+    const float r = (by1 - by0) / 2.0f;
+    builder.AddShadow(bx0, by0 + pad * 0.4f, bx1, by1 + pad * 0.4f, r, em * 0.8f);
+    const u32 shadow_vertices = builder.VertexCount();
+    builder.AddRoundRect(bx0, by0, bx1, by1, r);
+    const u32 box_end = builder.VertexCount();
+    builder.AddRoundRing(bx0, by0, bx1, by1, r);
+    const u32 ring_end = builder.VertexCount();
 
     builder.AddText(ox, oy, text, scale);
-    const u32 glyph_vertices = builder.VertexCount() - box_vertices;
+    const u32 glyph_vertices = builder.VertexCount() - ring_end;
 
-    constexpr std::array<float, 4> box_color = {0.05f, 0.06f, 0.08f, 0.85f};
-    constexpr std::array<float, 4> text_color = {1.0f, 1.0f, 1.0f, 1.0f};
+    constexpr std::array<float, 4> shadow_color = {0.0f, 0.0f, 0.0f, 0.45f};
+    constexpr std::array<float, 4> box_color = {0.066f, 0.07f, 0.1f, 0.94f};
+    constexpr std::array<float, 4> ring_color = {1.0f, 1.0f, 1.0f, 0.12f};
+    constexpr std::array<float, 4> text_color = {0.96f, 0.96f, 0.98f, 1.0f};
 
     OverlayDraw overlay;
     if (!UploadOverlayVertices(frame, verts, overlay)) {
         return {};
     }
-    overlay.batches.push_back({box_color, 0, box_vertices});
+    overlay.batches.push_back({shadow_color, 0, shadow_vertices});
+    overlay.batches.push_back({box_color, shadow_vertices, box_end - shadow_vertices});
+    overlay.batches.push_back({ring_color, box_end, ring_end - box_end});
     if (glyph_vertices > 0) {
-        overlay.batches.push_back({text_color, box_vertices, glyph_vertices});
+        overlay.batches.push_back({text_color, ring_end, glyph_vertices});
     }
     return overlay;
 }
 
+namespace {
+
+// The in-game menu shares the launcher's look: a dark glass panel, teal accents and button chips.
+constexpr std::array<float, 4> kQmText = {0.96f, 0.96f, 0.98f, 1.0f};
+constexpr std::array<float, 4> kQmTextDim = {0.64f, 0.64f, 0.73f, 1.0f};
+constexpr std::array<float, 4> kQmAccent = {0.37f, 0.91f, 0.87f, 1.0f};
+
+// A footer hint such as "A Select": a button chip and its label, or just text ("1-10 of 23").
+struct HintPart {
+    std::string button;
+    std::string label;
+};
+
+std::vector<HintPart> SplitHints(const std::string& hint) {
+    std::vector<HintPart> parts;
+    std::size_t start = 0;
+    while (start < hint.size()) {
+        std::size_t end = hint.find("   ", start);
+        if (end == std::string::npos) {
+            end = hint.size();
+        }
+        std::string token = hint.substr(start, end - start);
+        start = end + 3;
+        while (!token.empty() && token.front() == ' ') {
+            token.erase(token.begin());
+        }
+        while (!token.empty() && token.back() == ' ') {
+            token.pop_back();
+        }
+        if (token.empty()) {
+            continue;
+        }
+        const std::size_t space = token.find(' ');
+        const std::string first = token.substr(0, space);
+        // Buttons are short and in capitals ("A", "ZL/ZR", "+/-"), or the stick.
+        const bool button = space != std::string::npos && first.size() <= 6 &&
+                            (first == "Stick" ||
+                             std::all_of(first.begin(), first.end(), [](char c) {
+                                 return (c >= 'A' && c <= 'Z') || c == '+' || c == '-' || c == '/';
+                             }));
+        if (button) {
+            parts.push_back({first, token.substr(space + 1)});
+        } else {
+            parts.push_back({"", token});
+        }
+    }
+    return parts;
+}
+
+} // namespace
+
 OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& layout,
                                              Frame* frame) {
     if (!VideoCore::IsOverlayMenuVisible()) {
+        quick_menu_open = 0.0f;
         return {};
     }
     const VideoCore::OverlayMenuState state = VideoCore::GetOverlayMenuState();
     if (!state.visible) {
+        quick_menu_open = 0.0f;
         return {};
     }
 
@@ -1969,72 +2097,116 @@ OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& la
         return {};
     }
 
+    // The menu fades and rises in as it opens; the highlight glides between rows.
+    const auto now = std::chrono::steady_clock::now();
+    if (quick_menu_open <= 0.0f) {
+        quick_menu_last = now;
+        quick_menu_open = 0.001f;
+        quick_menu_highlight = -1.0f;
+    }
+    const float dt = std::clamp(std::chrono::duration<float>(now - quick_menu_last).count(), 0.0f, 0.1f);
+    quick_menu_last = now;
+    quick_menu_open = std::min(1.0f, quick_menu_open + dt / 0.16f);
+    const float appear = 1.0f - (1.0f - quick_menu_open) * (1.0f - quick_menu_open) * (1.0f - quick_menu_open);
+    if (state.title != quick_menu_title) {
+        quick_menu_title = state.title;
+        quick_menu_highlight = -1.0f;
+    }
+    if (quick_menu_highlight < 0.0f) {
+        quick_menu_highlight = static_cast<float>(state.selected);
+    } else {
+        quick_menu_highlight = state.selected + (quick_menu_highlight - state.selected) * std::exp2(-dt / 0.04f);
+    }
+
     std::vector<float> verts;
-    verts.reserve(2048);
+    verts.reserve(4096);
     OverlayBuilder builder{verts, canvas};
 
-    // Font em size scaled to the output so the menu is a consistent size everywhere.
-    const float em = std::max(18.0f, std::round(canvas.ShortEdge() / 26.0f));
-    const float title_em = std::round(em * 1.18f);
+    // Sizes follow the output so the menu reads the same docked and handheld.
+    const float em = std::max(18.0f, std::round(canvas.ShortEdge() / 27.0f));
     const float scale = em / OverlayFont::kBakePixelHeight;
+    const float title_em = std::round(em * 1.3f);
     const float title_scale = title_em / OverlayFont::kBakePixelHeight;
+    const float small_em = std::round(em * 0.68f);
+    const float small_scale = small_em / OverlayFont::kBakePixelHeight;
     const float line_h = OverlayFont::kLineHeight * scale;
     const float title_line_h = OverlayFont::kLineHeight * title_scale;
-    const float row_h = std::round(line_h * 1.5f);
-    const float footer_h = line_h;
-    const float pad = std::round(em * 0.9f);
-    const float sep_gap = std::round(row_h * 0.4f);
-    const float col_gap = em * 1.4f;
+    const float small_line_h = OverlayFont::kLineHeight * small_scale;
+    const float row_h = std::round(em * 1.9f);
+    const float pad = std::round(em * 1.0f);
+    const float radius = std::round(em * 0.9f);
+    const float col_gap = em * 1.6f;
+    const float chip_h = std::round(em * 1.15f);
+    const float chip_scale = std::round(em * 0.62f) / OverlayFont::kBakePixelHeight;
+    const float hint_scale = std::round(em * 0.8f) / OverlayFont::kBakePixelHeight;
+    const float hint_gap = std::round(em * 1.1f);
 
-    // Size the panel to its contents and centre it.
+    // "Quick Menu > Display" shows as a small "QUICK MENU" over a large "Display".
+    std::string crumb, title = state.title;
+    if (const std::size_t sep = title.rfind(" > "); sep != std::string::npos) {
+        crumb = title.substr(0, sep);
+        title = title.substr(sep + 3);
+        for (char& c : crumb) {
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+    }
+
+    // The footer's chips and labels, measured once.
+    const std::vector<HintPart> hints = SplitHints(state.hint);
+    float hints_w = 0.0f;
+    for (const HintPart& part : hints) {
+        if (!part.button.empty()) {
+            hints_w += std::max(chip_h, OverlayBuilder::Measure(part.button, chip_scale) + chip_h * 0.7f) +
+                       em * 0.4f;
+        }
+        hints_w += OverlayBuilder::Measure(part.label, hint_scale) + hint_gap;
+    }
+    hints_w = std::max(0.0f, hints_w - hint_gap);
+
+    // Size the panel to its contents.
     float max_row_w = 0.0f;
     for (const auto& item : state.items) {
-        float rw = OverlayBuilder::Measure(item.label, scale);
+        float rw = OverlayBuilder::Measure(item.label, scale) + em * 1.2f;
         if (!item.value.empty()) {
             rw += col_gap + OverlayBuilder::Measure(item.value, scale);
         }
         max_row_w = std::max(max_row_w, rw);
     }
     const int n = static_cast<int>(state.items.size());
-    const float inner_w = std::max({max_row_w, OverlayBuilder::Measure(state.title, title_scale),
-                                    OverlayBuilder::Measure(state.hint, scale)});
-    const float panel_w = std::clamp(inner_w + 2.0f * pad, 0.35f * w, 0.92f * w);
-    const float panel_h =
-        pad + title_line_h + sep_gap + static_cast<float>(n) * row_h + sep_gap + footer_h + pad;
+    const float header_h = (crumb.empty() ? 0.0f : small_line_h) + title_line_h;
+    const float inner_w = std::max({max_row_w, OverlayBuilder::Measure(title, title_scale),
+                                    OverlayBuilder::Measure(crumb, small_scale), hints_w});
+    const float panel_w = std::round(std::clamp(inner_w + 2.0f * pad, 0.35f * w, 0.92f * w));
+    const float sep_gap = std::round(em * 0.7f);
+    const float panel_h = std::round(pad * 0.9f + header_h + sep_gap * 2.0f + static_cast<float>(n) * row_h +
+                                     sep_gap + chip_h + pad * 0.9f);
     const float panel_x0 = std::round((w - panel_w) / 2.0f);
+    const float rise = std::round(em * 0.8f * (1.0f - appear));
     // The compact panel keeps to an edge so the screens stay visible.
-    const float panel_y0 = !state.compact     ? std::round((h - panel_h) / 2.0f)
-                           : state.compact_top ? std::round(pad * 0.6f)
-                                               : std::round(h - panel_h - pad * 0.6f);
+    const float panel_y0 = (!state.compact     ? std::round((h - panel_h) / 2.0f)
+                            : state.compact_top ? std::round(pad * 0.6f)
+                                                : std::round(h - panel_h - pad * 0.6f)) +
+                           rise;
     const float panel_x1 = panel_x0 + panel_w;
     const float panel_y1 = panel_y0 + panel_h;
 
     std::vector<OverlayDraw::Batch> batches;
-    const auto emit = [&](const std::array<float, 4>& color, u32 start) {
+    const auto emit = [&](std::array<float, 4> color, u32 start) {
         const u32 count = builder.VertexCount() - start;
-        if (count > 0) {
+        color[3] *= appear;
+        if (count > 0 && color[3] > 0.0f) {
             batches.push_back({color, start, count});
         }
     };
-
-    constexpr std::array<float, 4> c_dim = {0.0f, 0.0f, 0.0f, 0.55f};
-    constexpr std::array<float, 4> c_panel = {0.10f, 0.11f, 0.14f, 0.96f};
-    constexpr std::array<float, 4> c_accent = {0.30f, 0.34f, 0.45f, 0.9f};
-    constexpr std::array<float, 4> c_highlight = {0.20f, 0.45f, 0.85f, 0.9f};
-    constexpr std::array<float, 4> c_title = {1.0f, 1.0f, 1.0f, 1.0f};
-    constexpr std::array<float, 4> c_row = {0.82f, 0.85f, 0.92f, 1.0f};
-    constexpr std::array<float, 4> c_header = {0.55f, 0.62f, 0.80f, 1.0f};
-    constexpr std::array<float, 4> c_sel = {1.0f, 1.0f, 1.0f, 1.0f};
-    constexpr std::array<float, 4> c_footer = {0.60f, 0.63f, 0.72f, 1.0f};
 
     // Dim the running game, unless the player is arranging its screens.
     if (!state.compact) {
         const u32 s = builder.VertexCount();
         builder.AddRect(0.0f, 0.0f, w, h);
-        emit(c_dim, s);
+        emit({0.012f, 0.012f, 0.03f, 0.62f}, s);
     }
-    // Outlines around the two screens, the one being edited in the highlight colour. Canvas
-    // pixels are framebuffer pixels unless the overlay is rotated, so only then.
+    // Outlines around the two screens, the one being edited in the accent colour. Canvas pixels
+    // are framebuffer pixels unless the overlay is rotated, so only then.
     if (state.outline_screen >= 0 && canvas.rotation == 0) {
         const float t = std::max(2.0f, std::round(em / 7.0f));
         const auto outline = [&](const Common::Rectangle<u32>& r) {
@@ -2045,125 +2217,227 @@ OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& la
             builder.AddRect(x0, y0 + t, x0 + t, y1 - t);
             builder.AddRect(x1 - t, y0 + t, x1, y1 - t);
         };
-        constexpr std::array<float, 4> c_other = {1.0f, 1.0f, 1.0f, 0.45f};
-        constexpr std::array<float, 4> c_editing = {0.36f, 0.91f, 0.87f, 1.0f};
         const bool top_first = state.outline_screen == 1;
         {
             const u32 s = builder.VertexCount();
             outline(top_first ? layout.top_screen : layout.bottom_screen);
-            emit(c_other, s);
+            emit({1.0f, 1.0f, 1.0f, 0.45f}, s);
         }
         {
             const u32 s = builder.VertexCount();
             outline(top_first ? layout.bottom_screen : layout.top_screen);
-            emit(c_editing, s);
+            emit(kQmAccent, s);
         }
     }
+
+    // The panel: a soft shadow, dark glass with light across its top, and a fine edge.
     {
         const u32 s = builder.VertexCount();
-        builder.AddRect(panel_x0, panel_y0, panel_x1, panel_y1);
-        emit(c_panel, s);
+        const float drop = std::round(em * 0.45f);
+        builder.AddShadow(panel_x0, panel_y0 + drop, panel_x1, panel_y1 + drop, radius, em * 1.4f);
+        emit({0.0f, 0.0f, 0.0f, 0.5f}, s);
+    }
+    {
+        const u32 s = builder.VertexCount();
+        builder.AddRoundRect(panel_x0, panel_y0, panel_x1, panel_y1, radius);
+        emit({0.066f, 0.07f, 0.1f, 0.94f}, s);
+    }
+    {
+        // Stacked faint bands make a smooth-looking sheen that fades down the panel.
+        const u32 s = builder.VertexCount();
+        for (int i = 0; i < 6; ++i) {
+            const float band = panel_h * 0.46f * (1.0f - i / 6.0f);
+            builder.AddRoundRectTop(panel_x0, panel_y0, panel_x1, panel_y0 + std::max(band, radius * 2.0f), radius);
+        }
+        emit({1.0f, 1.0f, 1.0f, 0.011f}, s);
+    }
+    {
+        const u32 s = builder.VertexCount();
+        builder.AddRoundRing(panel_x0, panel_y0, panel_x1, panel_y1, radius);
+        emit({1.0f, 1.0f, 1.0f, 0.12f}, s);
     }
 
-    // Walk down the panel building each section's vertical extents.
-    float pen_y = panel_y0 + pad;
-    const float title_x =
-        std::round(panel_x0 + (panel_w - OverlayBuilder::Measure(state.title, title_scale)) / 2.0f);
+    // Walk down the panel.
+    float pen_y = panel_y0 + pad * 0.9f;
+    const float crumb_y = pen_y;
+    if (!crumb.empty()) {
+        pen_y += small_line_h;
+    }
     const float title_y = pen_y;
-    pen_y += title_line_h + sep_gap * 0.5f;
-    const float underline_y = std::round(pen_y);
-    pen_y += sep_gap * 0.5f;
+    pen_y += title_line_h + sep_gap;
+    const float header_line_y = std::round(pen_y);
+    pen_y += sep_gap;
     const float rows_top = pen_y;
-    pen_y = rows_top + static_cast<float>(n) * row_h + sep_gap * 0.5f;
-    const float footer_line_y = std::round(pen_y);
-    pen_y += sep_gap * 0.5f;
+    pen_y = rows_top + static_cast<float>(n) * row_h + sep_gap;
     const float footer_y = pen_y;
+    const float text_x = panel_x0 + pad;
 
-    // Title underline and footer separator.
+    // A hairline under the header.
     {
         const u32 s = builder.VertexCount();
-        const float lx0 = panel_x0 + pad;
-        const float lx1 = panel_x1 - pad;
-        const float th = std::max(1.0f, std::round(em / 12.0f));
-        builder.AddRect(lx0, underline_y, lx1, underline_y + th);
-        builder.AddRect(lx0, footer_line_y, lx1, footer_line_y + th);
-        emit(c_accent, s);
+        builder.AddRect(panel_x0 + pad, header_line_y, panel_x1 - pad, header_line_y + std::max(1.0f, std::round(em / 16.0f)));
+        emit({1.0f, 1.0f, 1.0f, 0.08f}, s);
     }
 
     const bool has_selection = n > 0 && state.selected >= 0 && state.selected < n &&
                                !state.items[state.selected].is_header;
 
-    // Highlight bar behind the selected row.
+    // The highlight: a lit pill with an accent bar, gliding to the selected row.
     if (has_selection) {
-        const u32 s = builder.VertexCount();
-        const float top = rows_top + static_cast<float>(state.selected) * row_h;
-        const float inset = std::round(row_h * 0.08f);
-        builder.AddRect(panel_x0 + pad * 0.5f, top + inset, panel_x1 - pad * 0.5f,
-                        top + row_h - inset);
-        emit(c_highlight, s);
+        const float inset = std::round(row_h * 0.07f);
+        const float top = rows_top + quick_menu_highlight * row_h + inset;
+        const float bottom = top + row_h - 2.0f * inset;
+        const float hx0 = panel_x0 + pad * 0.45f, hx1 = panel_x1 - pad * 0.45f;
+        const float hr = std::round(row_h * 0.3f);
+        {
+            const u32 s = builder.VertexCount();
+            builder.AddShadow(hx0, top, hx1, bottom, hr, em * 0.6f);
+            emit({kQmAccent[0], kQmAccent[1], kQmAccent[2], 0.10f}, s);
+        }
+        {
+            const u32 s = builder.VertexCount();
+            builder.AddRoundRect(hx0, top, hx1, bottom, hr);
+            emit({1.0f, 1.0f, 1.0f, 0.1f}, s);
+        }
+        {
+            const u32 s = builder.VertexCount();
+            builder.AddRoundRing(hx0, top, hx1, bottom, hr);
+            emit({1.0f, 1.0f, 1.0f, 0.14f}, s);
+        }
+        {
+            const u32 s = builder.VertexCount();
+            const float bar_w = std::max(3.0f, std::round(em * 0.18f));
+            const float bar_x = hx0 + std::round(em * 0.35f);
+            const float bar_h = (bottom - top) * 0.5f;
+            const float bar_y = top + (bottom - top - bar_h) / 2.0f;
+            builder.AddRoundRect(bar_x, bar_y, bar_x + bar_w, bar_y + bar_h, bar_w / 2.0f);
+            emit(kQmAccent, s);
+        }
     }
 
-    // Title.
+    // Header: the crumb and the page's name.
+    if (!crumb.empty()) {
+        const u32 s = builder.VertexCount();
+        builder.AddText(text_x, crumb_y, crumb, small_scale);
+        emit(kQmTextDim, s);
+    }
     {
         const u32 s = builder.VertexCount();
-        builder.AddText(title_x, title_y, state.title, title_scale);
-        emit(c_title, s);
+        builder.AddText(text_x, title_y, title, title_scale);
+        emit(kQmText, s);
     }
 
-    const auto add_row = [&](int i) {
-        const auto& item = state.items[i];
-        const float top = rows_top + static_cast<float>(i) * row_h;
-        const float ty = std::round(top + (row_h - line_h) / 2.0f);
-        builder.AddText(panel_x0 + pad, ty, item.label, scale);
-        if (!item.value.empty()) {
-            const float vx = panel_x1 - pad - OverlayBuilder::Measure(item.value, scale);
-            builder.AddText(vx, ty, item.value, scale);
-        }
+    const float label_x = text_x + em * 0.6f;
+    const auto row_text_y = [&](int i) {
+        return std::round(rows_top + static_cast<float>(i) * row_h + (row_h - line_h) / 2.0f);
     };
 
-    // Draw non-selected rows, then the selected row brighter on top of its highlight.
+    // Labels, then values: the selected row's in white and accent, section headers dim and small.
     {
         const u32 s = builder.VertexCount();
         for (int i = 0; i < n; ++i) {
-            if (i != state.selected && !state.items[i].is_header) {
-                add_row(i);
+            if (!state.items[i].is_header && i != state.selected) {
+                builder.AddText(label_x, row_text_y(i), state.items[i].label, scale);
             }
         }
-        emit(c_row, s);
+        emit({0.86f, 0.86f, 0.91f, 1.0f}, s);
     }
-
+    {
+        const u32 s = builder.VertexCount();
+        for (int i = 0; i < n; ++i) {
+            const auto& item = state.items[i];
+            if (!item.is_header && i != state.selected && !item.value.empty()) {
+                builder.AddText(panel_x1 - pad - OverlayBuilder::Measure(item.value, scale), row_text_y(i), item.value,
+                                scale);
+            }
+        }
+        emit(kQmTextDim, s);
+    }
     {
         const u32 s = builder.VertexCount();
         for (int i = 0; i < n; ++i) {
             if (!state.items[i].is_header) {
                 continue;
             }
-            add_row(i);
+            std::string label = state.items[i].label;
+            for (char& c : label) {
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            }
             const float top = rows_top + static_cast<float>(i) * row_h;
-            const float rule_x0 = panel_x0 + pad +
-                                  OverlayBuilder::Measure(state.items[i].label, scale) + em * 0.6f;
-            const float rule_x1 = panel_x1 - pad;
-            const float rule_y = std::round(top + row_h / 2.0f);
-            if (rule_x1 > rule_x0) {
-                builder.AddRect(rule_x0, rule_y, rule_x1,
-                                rule_y + std::max(1.0f, std::round(em / 16.0f)));
+            const float ty = std::round(top + (row_h - small_line_h) / 2.0f + small_line_h * 0.12f);
+            builder.AddText(text_x, ty, label, small_scale);
+            const float rule_x0 = text_x + OverlayBuilder::Measure(label, small_scale) + em * 0.6f;
+            const float rule_y = std::round(top + row_h / 2.0f + small_line_h * 0.12f);
+            if (panel_x1 - pad > rule_x0) {
+                builder.AddRect(rule_x0, rule_y, panel_x1 - pad, rule_y + std::max(1.0f, std::round(em / 16.0f)));
             }
         }
-        emit(c_header, s);
+        emit({0.52f, 0.52f, 0.62f, 1.0f}, s);
     }
     if (has_selection) {
-        const u32 s = builder.VertexCount();
-        add_row(state.selected);
-        emit(c_sel, s);
+        const auto& item = state.items[state.selected];
+        {
+            const u32 s = builder.VertexCount();
+            builder.AddText(label_x, row_text_y(state.selected), item.label, scale);
+            emit(kQmText, s);
+        }
+        if (!item.value.empty()) {
+            const u32 s = builder.VertexCount();
+            builder.AddText(panel_x1 - pad - OverlayBuilder::Measure(item.value, scale), row_text_y(state.selected),
+                            item.value, scale);
+            emit(kQmAccent, s);
+        }
     }
 
-    // Footer hint.
-    if (!state.hint.empty()) {
-        const u32 s = builder.VertexCount();
-        const float fx =
-            std::round(panel_x0 + (panel_w - OverlayBuilder::Measure(state.hint, scale)) / 2.0f);
-        builder.AddText(fx, footer_y, state.hint, scale);
-        emit(c_footer, s);
+    // Footer: button chips and what they do, centred.
+    if (!hints.empty()) {
+        struct Placed {
+            float chip_x;
+            float chip_w; // 0 for plain text
+            float label_x;
+            const HintPart* part;
+        };
+        std::vector<Placed> placed;
+        float x = std::round(panel_x0 + (panel_w - hints_w) / 2.0f);
+        for (const HintPart& part : hints) {
+            Placed p{x, 0.0f, x, &part};
+            if (!part.button.empty()) {
+                p.chip_w = std::max(chip_h, OverlayBuilder::Measure(part.button, chip_scale) + chip_h * 0.7f);
+                p.label_x = x + p.chip_w + em * 0.4f;
+            }
+            x = p.label_x + OverlayBuilder::Measure(part.label, hint_scale) + hint_gap;
+            placed.push_back(p);
+        }
+        const float chip_text_h = OverlayFont::kLineHeight * chip_scale;
+        const float label_h = OverlayFont::kLineHeight * hint_scale;
+        {
+            const u32 s = builder.VertexCount();
+            for (const Placed& p : placed) {
+                if (p.chip_w > 0.0f) {
+                    builder.AddRoundRect(p.chip_x, footer_y, p.chip_x + p.chip_w, footer_y + chip_h, chip_h / 2.0f);
+                }
+            }
+            emit({0.95f, 0.95f, 0.97f, 1.0f}, s);
+        }
+        {
+            const u32 s = builder.VertexCount();
+            for (const Placed& p : placed) {
+                if (p.chip_w > 0.0f) {
+                    const float tw = OverlayBuilder::Measure(p.part->button, chip_scale);
+                    builder.AddText(std::round(p.chip_x + (p.chip_w - tw) / 2.0f),
+                                    std::round(footer_y + (chip_h - chip_text_h) / 2.0f), p.part->button, chip_scale);
+                }
+            }
+            emit({0.08f, 0.08f, 0.11f, 1.0f}, s);
+        }
+        {
+            const u32 s = builder.VertexCount();
+            for (const Placed& p : placed) {
+                builder.AddText(std::round(p.label_x), std::round(footer_y + (chip_h - label_h) / 2.0f), p.part->label,
+                                hint_scale);
+            }
+            emit({0.8f, 0.8f, 0.86f, 1.0f}, s);
+        }
     }
 
     if (batches.empty()) {
