@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <functional>
 #include <optional>
 #include <string>
@@ -69,7 +70,24 @@ Skin::Fonts SkinFonts() {
 }
 
 // The page name shown in the header; set per frame by Menu::Draw.
-std::string g_header_title = "Library";
+std::string g_header_title = "Home";
+std::string g_nickname = "Player";
+float g_anim_time = 0.0f; // seconds, for the focus ring's pulse
+
+// Each system's short badge and colour for tiles and the carousel.
+std::string_view SystemBadge(int system) {
+    return system >= 0 ? std::string_view{Multi::Systems()[system].badge} : std::string_view{"3DS"};
+}
+u32 SystemColor(int system) {
+    if (system < 0) {
+        return MakeColor(0xE2, 0x1B, 0x33);
+    }
+    const Multi::System& s = Multi::Systems()[system];
+    return MakeColor(s.r, s.g, s.b);
+}
+std::string_view SystemName(int system) {
+    return system >= 0 ? std::string_view{Multi::Systems()[system].name} : std::string_view{"Nintendo 3DS"};
+}
 
 
 struct Repeater {
@@ -105,7 +123,7 @@ enum class Tab { Library, Systems, Install, Settings, Paths, Artic };
 enum class Focus { Rail, Content };
 
 // Indexed by Tab, so the order has to match the enum.
-constexpr std::array<std::pair<Tab, const char*>, 6> kRailItems{{{Tab::Library, "Library"},
+constexpr std::array<std::pair<Tab, const char*>, 6> kRailItems{{{Tab::Library, "Home"},
                                                                  {Tab::Systems, "Systems"},
                                                                  {Tab::Install, "Install"},
                                                                  {Tab::Settings, "Settings"},
@@ -340,25 +358,40 @@ int DrawHint(Canvas& canvas, int x, int y, const char* button, const char* label
     return Skin::DrawHint(canvas, SkinFonts(), x, y, button, label);
 }
 
-// Indexed by Tab, so the order has to match the enum.
-constexpr std::array<const std::uint8_t*, 6> kRailIconMasks{
-    RailIcons::kLibrary, RailIcons::kSystems, RailIcons::kInstall, RailIcons::kSettings, RailIcons::kPaths, nullptr};
 
 // Draws a nav-rail icon, tinted like text: the mask supplies coverage only.
 
 void DrawRail(Canvas& canvas, Tab active, Tab cursor, bool rail_focused) {
-    std::vector<Skin::RailEntry> items;
-    for (std::size_t i = 0; i < kRailItems.size(); ++i) {
-        items.push_back({kRailItems[i].second, kRailIconMasks[i]});
-    }
-    // The pill follows the cursor while the rail is focused; the page you came from keeps a ghost.
-    const int pill = static_cast<int>(rail_focused ? cursor : active);
-    const int ghost = rail_focused && active != cursor ? static_cast<int>(active) : -1;
-    Skin::DrawRail(canvas, SkinFonts(), items, pill, ghost);
+    static const std::vector<Skin::DockItem> items = {
+        {"Home", Skin::DockIcon::Home},       {"Systems", Skin::DockIcon::Systems},
+        {"Install", Skin::DockIcon::Install}, {"Settings", Skin::DockIcon::Settings},
+        {"Paths", Skin::DockIcon::Folder},    {"Artic", Skin::DockIcon::Text, "AB"},
+    };
+    Skin::DrawDock(canvas, SkinFonts(), items, static_cast<int>(active), static_cast<int>(cursor), rail_focused);
 }
 
 void DrawHeader(Canvas& canvas, std::string_view subtitle) {
-    Skin::DrawHeader(canvas, SkinFonts(), g_header_title, subtitle);
+    Skin::TopBar bar;
+    bar.title = g_header_title;
+    bar.subtitle = subtitle;
+    const std::time_t now = std::time(nullptr);
+    const std::tm* lt = std::localtime(&now);
+    char hm[8] = "", ap[4] = "";
+    if (lt) {
+        std::strftime(hm, sizeof(hm), "%I:%M", lt);
+        std::strftime(ap, sizeof(ap), "%p", lt);
+    }
+    bar.clock = hm;
+    bar.ampm = ap;
+    u32 pct = 0;
+    if (R_SUCCEEDED(psmGetBatteryChargePercentage(&pct))) {
+        bar.battery = static_cast<int>(pct);
+    }
+    PsmChargerType charger{};
+    if (R_SUCCEEDED(psmGetChargerType(&charger))) {
+        bar.charging = charger != PsmChargerType_Unconnected;
+    }
+    Skin::DrawTopBar(canvas, SkinFonts(), bar);
 }
 
 void DrawNotice(Canvas& canvas) {
@@ -372,14 +405,8 @@ void DrawTile(Canvas& canvas, const GameEntry& game, int x, int y, bool selected
               bool content_focused) {
     Skin::TileInfo t;
     t.title = game.title;
-    std::string subtitle = game.publisher;
-    if (game.system >= 0) {
-        t.system_id = Multi::Systems()[game.system].id;
-        subtitle = Multi::Systems()[game.system].name;
-    } else if (subtitle.empty()) {
-        subtitle = "Nintendo 3DS";
-    }
-    t.subtitle = subtitle;
+    t.system_badge = SystemBadge(game.system);
+    t.system_color = SystemColor(game.system);
     t.art_key = game.path;
     if (!game.icon.empty()) {
         t.icon = &game.icon;
@@ -394,7 +421,7 @@ void DrawTile(Canvas& canvas, const GameEntry& game, int x, int y, bool selected
     if (game.installed) {
         t.tags.push_back("SD");
     }
-    Skin::DrawTile(canvas, SkinFonts(), t, x, y, selected, content_focused);
+    Skin::DrawTile(canvas, SkinFonts(), t, x, y, selected, content_focused, g_anim_time);
 }
 
 void DrawEmptyLibrary(Canvas& canvas, const std::string& roms_dir) {
@@ -915,6 +942,13 @@ public:
                 }
             } else if (PerGameOpen()) {
                 HandleSettings(down, nav, dpad_nav);
+            } else if (down & (HidNpadButton_ZL | HidNpadButton_ZR)) {
+                // ZL / ZR step through the dock from anywhere.
+                const int n = static_cast<int>(kRailItems.size());
+                const int step = (down & HidNpadButton_ZR) ? 1 : n - 1;
+                SetTab(kRailItems[(static_cast<int>(tab) + step) % n].first);
+                rail_sel = tab;
+                focus = Focus::Content;
             } else if (focus == Focus::Rail) {
                 HandleRail(down, nav);
             } else if (tab == Tab::Library) {
@@ -1284,6 +1318,9 @@ private:
         filtered.clear();
         const std::string needle = ToLowerAscii(search);
         for (int i = 0; i < static_cast<int>(games.size()); ++i) {
+            if (system_filter != kNoSystemFilter && games[i].system != system_filter) {
+                continue;
+            }
             if (needle.empty() || ToLowerAscii(games[i].title).find(needle) != std::string::npos) {
                 filtered.push_back(i);
             }
@@ -1337,7 +1374,13 @@ private:
             Rescan();
         }
         if (down & HidNpadButton_B) {
-            EnterRail();
+            if (system_filter != kNoSystemFilter) {
+                // Back out of one system's games to everything.
+                system_filter = kNoSystemFilter;
+                ApplyFilter();
+            } else {
+                EnterRail();
+            }
         }
         EnsureVisible(grid);
         return false;
@@ -1608,10 +1651,10 @@ private:
 
     void HandleRail(u64 down, u32 nav) {
         int index = static_cast<int>(rail_sel);
-        if (nav & DirUp) {
+        if (nav & DirLeft) {
             index = std::max(0, index - 1);
         }
-        if (nav & DirDown) {
+        if (nav & DirRight) {
             index = std::min(static_cast<int>(kRailItems.size()) - 1, index + 1);
         }
         rail_sel = kRailItems[index].first;
@@ -2566,6 +2609,12 @@ private:
         }
         touch_was_down = true;
 
+        if (const int dock_hit = Skin::DockHitTest(canvas, static_cast<int>(kRailItems.size()), tx, ty); dock_hit >= 0) {
+            SetTab(kRailItems[dock_hit].first);
+            rail_sel = tab;
+            focus = Focus::Content;
+            return;
+        }
         if (tx < kRailW) {
             if (const std::optional<Tab> hit = RailHitTest(ty)) {
                 SetTab(*hit);
@@ -2772,6 +2821,7 @@ private:
                      const std::vector<DirEntry>& entries, const std::vector<FileEntry>& files,
                      int sel, int scroll, bool pick_file) {
         Canvas& c = canvas;
+        g_anim_time = static_cast<float>(armTicksToNs(armGetSystemTick()) / 1'000'000) / 1000.0f;
         Skin::DrawBackdrop(c);
 
         const bool devices = dir.empty();
@@ -2811,7 +2861,7 @@ private:
         c.FillRect(0, ContentBottom(), g_screen_w, kHintH, kColHintBar);
         c.FillRect(0, ContentBottom(), g_screen_w, 1, kColRail);
         int hx = 40;
-        const int hy = ContentBottom() + (kHintH - 28) / 2;
+        const int hy = g_screen_h - 44;
         hx += DrawHint(c, hx, hy, "A", pick_file ? "Open / Select" : "Open") + 22;
         hx += DrawHint(c, hx, hy, "B", has_parent ? "Up" : "Cancel") + 22;
         if (!devices && !pick_file) {
@@ -2864,7 +2914,7 @@ private:
             DrawRailHints(c);
         } else {
             int hx = HintX();
-            const int hy = ContentBottom() + (kHintH - 28) / 2;
+            const int hy = g_screen_h - 44;
             hx +=
                 DrawHint(c, hx, hy, "A", paths_sel == PathRowRecursive ? "Toggle" : "Browse") + 22;
             hx += DrawHint(c, hx, hy, "Y", paths_sel == PathRowRomsDir2 ? "Clear" : "Default") + 22;
@@ -2949,7 +2999,7 @@ private:
                 action = "Toggle";
             }
             int hx = HintX();
-            const int hy = ContentBottom() + (kHintH - 28) / 2;
+            const int hy = g_screen_h - 44;
             hx += DrawHint(c, hx, hy, "A", action) + 22;
             hx += DrawHint(c, hx, hy, "B", "Menu") + 22;
             DrawHint(c, hx, hy, "+ -", "Exit");
@@ -3175,7 +3225,7 @@ private:
             return;
         }
         int hx = HintX();
-        const int hy = ContentBottom() + (kHintH - 28) / 2;
+        const int hy = g_screen_h - 44;
         hx += DrawHint(c, hx, hy, "A", SelectedCia() ? "Install" : "Open") + 22;
         hx += DrawHint(c, hx, hy, "B", "Menu") + 22;
         hx += DrawHint(c, hx, hy, "Y", "Refresh") + 22;
@@ -3381,24 +3431,46 @@ private:
     }
 
     void DrawLibrary(Canvas& c) {
+        const bool content_focus = focus == Focus::Content;
+        // The focused game's name sits in the profile bar; otherwise the player's.
         std::string sub;
+        if (content_focus && !filtered.empty()) {
+            const GameEntry& game = games[filtered[selected]];
+            g_header_title = game.title;
+            sub = std::string{SystemName(game.system)};
+        } else {
+            g_header_title = system_filter != kNoSystemFilter ? std::string{SystemName(system_filter)} : g_nickname;
+            sub = std::to_string(filtered.size()) + (filtered.size() == 1 ? " game" : " games");
+        }
         if (!search.empty()) {
             sub = "Search: " + search + "  (" + std::to_string(filtered.size()) + ")";
-        } else {
-            sub = std::to_string(games.size()) + (games.size() == 1 ? " game" : " games");
         }
         DrawHeader(c, sub);
 
-        const bool content_focus = focus == Focus::Content;
         if (filtered.empty()) {
             DrawEmptyLibrary(c, paths.roms_dir);
         } else {
             const Grid grid = ComputeGrid();
-            for (int i = 0; i < static_cast<int>(filtered.size()); ++i) {
-                int x, y;
-                if (TileRect(grid, i, x, y)) {
-                    DrawTile(c, games[filtered[i]], x, y, i == selected, content_focus);
+            // Empty slots fill out the screen, like a console home menu.
+            const int cells = grid.cols * grid.visible_rows;
+            const int first = scroll_row * grid.cols;
+            for (int k = 0; k < cells; ++k) {
+                const int i = first + k;
+                if (i < static_cast<int>(filtered.size()) && i == selected) {
+                    continue;
                 }
+                const int x = grid.start_x + (k % grid.cols) * (kTileW + kTileGap);
+                const int y = grid.top + (k / grid.cols) * (kTileH + kTileGap);
+                if (i < static_cast<int>(filtered.size())) {
+                    DrawTile(c, games[filtered[i]], x, y, false, content_focus);
+                } else {
+                    Skin::DrawEmptySlot(c, x, y);
+                }
+            }
+            // The focused tile last, so its ring and shadow sit on top.
+            int x, y;
+            if (TileRect(grid, selected, x, y)) {
+                DrawTile(c, games[filtered[selected]], x, y, true, content_focus);
             }
             DrawScrollbar(c, grid);
         }
@@ -3406,29 +3478,30 @@ private:
             DrawRailHints(c);
         } else {
             int hx = HintX();
-            const int hy = ContentBottom() + (kHintH - 28) / 2;
+            const int hy = g_screen_h - 44;
             hx += DrawHint(c, hx, hy, "A", "Play") + 22;
             hx += DrawHint(c, hx, hy, "X", "Search") + 22;
             hx += DrawHint(c, hx, hy, "Y", "Refresh") + 22;
             hx += DrawHint(c, hx, hy, "L", "Picture") + 22;
             hx += DrawHint(c, hx, hy, "+", "Details") + 22;
+            if (system_filter != kNoSystemFilter) {
+                hx += DrawHint(c, hx, hy, "B", "All games") + 22;
+            }
             DrawHint(c, hx, hy, "+ -", "Exit");
         }
     }
 
-    // ---- Systems: a picture for each system ------------------------------------------
+    // ---- Systems: a carousel; A shows that system's games, Y sets its picture ----------------
 
-    static constexpr int kSysCols = 6;
-    static constexpr int kSysCardW = 150;
-    static constexpr int kSysCardH = 112;
-    static constexpr int kSysGapX = 24;
-    static constexpr int kSysRowH = kSysCardH + 50;
+    static constexpr int kNoSystemFilter = -99;
+    int system_filter = kNoSystemFilter;
     int systems_sel = 0;
-    int systems_scroll = 0;
+    float systems_anim = 0.0f;
     std::string picture_dir = "sdmc:/";
 
-    int SystemsVisibleRows() const {
-        return std::max(1, (ContentBottom() - kContentTop - 16) / kSysRowH);
+    // Art::Systems() lists "3ds" first, then Multi systems in order.
+    static int SystemIndexFor(int row) {
+        return row == 0 ? -1 : row - 1;
     }
 
     void PickGamePicture(const GameEntry& game) {
@@ -3446,22 +3519,23 @@ private:
     void HandleSystems(u64 down, u32 nav) {
         const auto& systems = Art::Systems();
         const int count = static_cast<int>(systems.size());
-        if (nav & DirLeft) {
+        if (nav & (DirUp | DirLeft)) {
             systems_sel = std::max(0, systems_sel - 1);
         }
-        if (nav & DirRight) {
+        if (nav & (DirDown | DirRight)) {
             systems_sel = std::min(count - 1, systems_sel + 1);
         }
-        if (nav & DirUp) {
-            systems_sel = std::max(0, systems_sel - kSysCols);
-        }
-        if (nav & DirDown) {
-            systems_sel = std::min(count - 1, systems_sel + kSysCols);
-        }
-        const int row = systems_sel / kSysCols;
-        systems_scroll = std::clamp(systems_scroll, row - SystemsVisibleRows() + 1, row);
         const std::string& id = systems[systems_sel].id;
         if (down & HidNpadButton_A) {
+            system_filter = SystemIndexFor(systems_sel);
+            search.clear();
+            ApplyFilter();
+            SetTab(Tab::Library);
+            rail_sel = tab;
+            focus = Focus::Content;
+            return;
+        }
+        if (down & HidNpadButton_Y) {
             const std::string title = "Picture for " + systems[systems_sel].name;
             const std::optional<std::string> picked = BrowseForImage(title.c_str(), picture_dir);
             if (picked) {
@@ -3482,54 +3556,35 @@ private:
     }
 
     void DrawSystemsPage(Canvas& c) {
-        DrawHeader(c, "PNG, JPEG or WebP, any size");
         const auto& systems = Art::Systems();
-        const int count = static_cast<int>(systems.size());
-        const int used = kSysCols * kSysCardW + (kSysCols - 1) * kSysGapX;
-        const int x0 = kContentX + (ContentW() - used) / 2;
-        const int y0 = kContentTop + 8;
-        const bool focused = focus == Focus::Content;
-        for (int i = 0; i < count; ++i) {
-            const int row = i / kSysCols - systems_scroll;
-            if (row < 0 || row >= SystemsVisibleRows()) {
-                continue;
-            }
-            const int x = x0 + (i % kSysCols) * (kSysCardW + kSysGapX);
-            const int y = y0 + row * kSysRowH;
-            const bool on = i == systems_sel;
-            if (on && focused) {
-                c.SoftShadow(x, y, kSysCardW, kSysCardH, 18, 12, 8, 0xC0);
-            }
-            Skin::DrawSystemMark(c, SkinFonts(), systems[i].id, x, y, kSysCardW, kSysCardH, 18);
-            if (on) {
-                c.RingRoundAA(x - 3, y - 3, kSysCardW + 6, kSysCardH + 6, 21, 3.0f,
-                              focused ? kColAccent : MakeColor(0x2F, 0xD6, 0xC9, 0x70));
-            }
-            const std::string name = g_font.Truncate(systems[i].name, 15, kSysCardW);
-            const int nw = g_font.Measure(name, 15);
-            g_font.Draw(c, x + (kSysCardW - nw) / 2, y + kSysCardH + 22, name, 15, on ? kColText : kColTextDim);
-            if (Skin::HasSystemImage(systems[i].id)) {
-                const char* tag = "CUSTOM";
-                const int tw = g_font_bold.Measure(tag, 11) + 12;
-                c.FillRoundAA(x + 8, y + 8, tw, 18, 9, MakeColor(0, 0, 0, 0xB0));
-                g_font_bold.Draw(c, x + 14, CenterBaseline(y + 8, 18, 11), tag, 11, kColText);
-            }
+        g_header_title = "Systems";
+        DrawHeader(c, "Pick a system to see its games");
+        systems_anim += (systems_sel - systems_anim) * 0.25f;
+        if (std::fabs(systems_sel - systems_anim) < 0.01f) {
+            systems_anim = static_cast<float>(systems_sel);
         }
-        const int rows = (count + kSysCols - 1) / kSysCols;
-        if (rows > SystemsVisibleRows()) {
-            const int track_h = SystemsVisibleRows() * kSysRowH - 20;
-            const int thumb_h = std::max(24, track_h * SystemsVisibleRows() / rows);
-            const int thumb_y = y0 + (track_h - thumb_h) * systems_scroll / std::max(1, rows - SystemsVisibleRows());
-            Skin::DrawScrollbar(c, g_screen_w - 12, y0, track_h, thumb_y, thumb_h);
+        std::vector<Skin::SystemCard> cards;
+        for (int i = 0; i < static_cast<int>(systems.size()); ++i) {
+            cards.push_back({systems[i].id, SystemBadge(SystemIndexFor(i)), SystemColor(SystemIndexFor(i))});
         }
+        const int sys = SystemIndexFor(systems_sel);
+        int count = 0;
+        for (const GameEntry& g : games) {
+            count += g.system == sys ? 1 : 0;
+        }
+        const std::string detail = count == 0 ? "No games yet" : std::to_string(count) + (count == 1 ? " game" : " games");
+        const bool custom = Skin::HasSystemImage(systems[systems_sel].id);
+        Skin::DrawSystemsCarousel(c, SkinFonts(), cards, systems_anim, systems_sel, systems[systems_sel].name, detail,
+                                  custom ? "Custom picture" : "Default look", true);
         if (focus == Focus::Rail) {
             DrawRailHints(c);
         } else {
             int hx = HintX();
-            const int hy = ContentBottom() + (kHintH - 28) / 2;
-            hx += DrawHint(c, hx, hy, "A", "Choose picture") + 22;
-            if (Skin::HasSystemImage(systems[systems_sel].id)) {
-                hx += DrawHint(c, hx, hy, "X", "Use default") + 22;
+            const int hy = g_screen_h - 44;
+            hx += DrawHint(c, hx, hy, "A", "Games") + 22;
+            hx += DrawHint(c, hx, hy, "Y", "Picture") + 22;
+            if (custom) {
+                hx += DrawHint(c, hx, hy, "X", "Default") + 22;
             }
             DrawHint(c, hx, hy, "B", "Back");
         }
@@ -3682,7 +3737,7 @@ private:
             DrawRailHints(c);
         } else {
             int hx = HintX();
-            const int hy = ContentBottom() + (kHintH - 28) / 2;
+            const int hy = g_screen_h - 44;
             const bool modal = has_sel && settings_rows[sel].modal != SettingsModal::None;
             if (modal) {
                 hx += DrawHint(c, hx, hy, "A", "Configure") + 22;
@@ -3908,8 +3963,8 @@ private:
     // Legend shown while the cursor sits on the Library/Settings rail.
     void DrawRailHints(Canvas& c) {
         int hx = HintX();
-        const int hy = ContentBottom() + (kHintH - 28) / 2;
-        hx += DrawHint(c, hx, hy, "^v", "Move") + 22;
+        const int hy = g_screen_h - 44;
+        hx += DrawHint(c, hx, hy, "<>", "Move") + 22;
         hx += DrawHint(c, hx, hy, "A", "Open") + 22;
         hx += DrawHint(c, hx, hy, "B", "Back") + 22;
         DrawHint(c, hx, hy, "+ -", "Exit");
@@ -4033,6 +4088,8 @@ MenuResult RunMenu(PadState& pad) {
     RefreshSystemSettings();
     static bool art_loaded = false;
     if (!art_loaded) {
+        psmInitialize();
+        g_nickname = Art::LoadProfile();
         Art::LoadSystemArt();
         art_loaded = true;
     }

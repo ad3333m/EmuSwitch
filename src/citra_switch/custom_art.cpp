@@ -209,6 +209,52 @@ std::string GameArtPath(const GameEntry& game) {
     return p;
 }
 
+std::string LoadProfile() {
+    std::string name = "Player";
+#ifdef __SWITCH__
+    if (R_FAILED(accountInitialize(AccountServiceType_Application))) {
+        return name;
+    }
+    AccountUid uid{};
+    if (R_FAILED(accountGetPreselectedUser(&uid)) || !accountUidIsValid(&uid)) {
+        if (R_FAILED(accountGetLastOpenedUser(&uid))) {
+            uid = AccountUid{};
+        }
+    }
+    AccountProfile profile;
+    if (accountUidIsValid(&uid) && R_SUCCEEDED(accountGetProfile(&profile, uid))) {
+        AccountUserData user{};
+        AccountProfileBase base{};
+        if (R_SUCCEEDED(accountProfileGet(&profile, &user, &base)) && base.nickname[0] != 0) {
+            name = base.nickname;
+        }
+        u32 size = 0;
+        if (R_SUCCEEDED(accountProfileGetImageSize(&profile, &size)) && size > 0 && size < (1u << 20)) {
+            std::vector<std::uint8_t> jpg(size);
+            u32 real = 0;
+            if (R_SUCCEEDED(accountProfileLoadImage(&profile, jpg.data(), size, &real)) && real > 0) {
+                // The decoder reads files, so the avatar takes a short trip through the SD card.
+                mkdir(kRoot, 0777);
+                const std::string path = std::string(kRoot) + "/avatar.jpg";
+                if (FILE* f = fopen(path.c_str(), "wb")) {
+                    const bool ok = fwrite(jpg.data(), 1, real, f) == real;
+                    fclose(f);
+                    DecodedImage img;
+                    if (ok && DecodeImageFile(path, 96, 96, img).empty() && img.width > 0) {
+                        std::vector<Gfx::u32> px(std::size_t(img.width) * img.height);
+                        std::memcpy(px.data(), img.rgba.data(), px.size() * 4);
+                        Skin::SetAvatar(std::move(px), img.width, img.height);
+                    }
+                }
+            }
+        }
+        accountProfileClose(&profile);
+    }
+    accountExit();
+#endif
+    return name;
+}
+
 void LoadSystemArt() {
     for (const SystemInfo& s : Systems()) ApplySystem(s.id);
 }

@@ -1,0 +1,52 @@
+name: frontend-check
+
+# Compiles only EmuSwitch's frontend (src/citra_switch) for the Switch, skipping the
+# emulator core and the NXVK driver build, so frontend mistakes show up in minutes
+# rather than at the end of the full 35-minute build.
+on:
+  push:
+    branches: [ "ui-*" ]
+    paths:
+      - "src/citra_switch/**"
+      - "src/common/settings.h"
+      - ".github/workflows/frontend-check.yml"
+  workflow_dispatch:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64:latest
+    steps:
+      - name: Tools
+        run: |
+          apt-get update -qq && apt-get install -y -qq cmake git python3 >/dev/null
+          git config --global --add safe.directory '*'
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Configure (NXVK stubbed)
+        run: |
+          # Configure only checks that the NXVK archives exist; nothing links here.
+          for a in src/nouveau/vulkan/libnvk.a src/util/libmesa_util.a src/util/libmesa_util_simd.a \
+                   src/util/blake3/libblake3.a src/c11/impl/libmesa_util_c11.a src/nouveau/compiler/libnak.a \
+                   src/nouveau/compiler/libnak_rs.a src/compiler/rust/libcompiler_c_helpers.a \
+                   src/nouveau/headers/libnvidia_headers_c.a src/nouveau/nil/libnil.a \
+                   src/nouveau/nil/liblibnil_format_table.a src/compiler/nir/libnir.a src/compiler/libcompiler.a \
+                   src/nouveau/mme/libnouveau_mme.a src/nouveau/winsys/libnouveau_ws.a \
+                   src/vulkan/util/libvulkan_util.a src/compiler/spirv/libvtn.a src/util/libxmlconfig.a; do
+            mkdir -p "externals/nxvk/switch/build/cross/$(dirname $a)"
+            touch "externals/nxvk/switch/build/cross/$a"
+          done
+          mkdir -p externals/nxvk/switch/smoke && touch externals/nxvk/switch/smoke/nvk_compat.c
+          mkdir -p externals/nxvk/include
+          cmake -S . -B build/switch -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+      - name: Compile the frontend
+        run: |
+          cd build/switch/src/citra_switch
+          for f in menu_skin custom_art multi_handoff multi_system emu_zip menu_data menu citra_switch config emulation; do
+            echo "::group::$f"
+            make "$f.o" || make "$f.cpp.o"
+            echo "::endgroup::"
+          done
+          make simplewebp_impl.o || make simplewebp_impl.c.o

@@ -28,6 +28,9 @@ bool IsImageFile(const std::string& name);
 std::string SystemArtPath(const std::string& id);
 std::string GameArtPath(const GameEntry& game);
 
+// The console user's nickname; their avatar goes to the skin's profile bar.
+std::string LoadProfile();
+
 // Decodes whatever is configured into the skin. Cheap to call again after a rescan.
 void LoadSystemArt();
 void LoadGameArt(const std::vector<GameEntry>& games);
