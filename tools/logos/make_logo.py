@@ -47,6 +47,9 @@ def main():
                 # Black and grey lettering turns light; lighter greys stay as they are.
                 v = int(round(255 - lum * 0.32))
                 px[x, y] = (v, v, v, a)
+            elif lum < 60:
+                # Deep colours (Nintendo 64's blue) come up a little so they read on dark grey.
+                px[x, y] = tuple(int(round(c + (255 - c) * 0.22)) for c in (r, g, b)) + (a,)
     im.save(dst, optimize=True)
     print(f"{dst}: {im.width}x{im.height}")
 

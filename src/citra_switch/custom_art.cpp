@@ -380,6 +380,11 @@ void ForDarkMenu(Gfx::Image& img) {
         const int lum = (r * 299 + g * 587 + b * 114) / 1000;
         if (std::max({r, g, b}) - std::min({r, g, b}) < 60 && lum < 180) {
             r = g = b = 255 - lum * 32 / 100;
+        } else if (lum < 60) {
+            // Deep colours come up a little so they read on dark grey.
+            r += (255 - r) * 22 / 100;
+            g += (255 - g) * 22 / 100;
+            b += (255 - b) * 22 / 100;
         }
         p = Gfx::u32(r) | (Gfx::u32(g) << 8) | (Gfx::u32(b) << 16) | (Gfx::u32(a) << 24);
     }
@@ -415,7 +420,8 @@ void Loader() {
             done.error = Decode(job.path, kSystemFit, false, done.img);
         } else if (job.kind == kLogoJob) {
             done.error = Decode(job.path, Fit{kLogoSide, kLogoSide}, true, done.img);
-            if (done.error.empty()) {
+            // The logos EmuSwitch ships are made for the dark menu already.
+            if (done.error.empty() && job.path.rfind("romfs:/", 0) != 0) {
                 ForDarkMenu(done.img);
             }
         } else {

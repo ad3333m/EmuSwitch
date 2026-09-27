@@ -108,7 +108,7 @@ endif()
 # Nintendo Switch target detection.
 if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     set(DEKOPON ON)
-    set(DEKOPON_VERSION "3.0.0-RC3")
+    set(DEKOPON_VERSION "3.0.0-RC4")
     set(ARCHITECTURE "arm64")
     message(STATUS "Building for Nintendo Switch")
 endif()
