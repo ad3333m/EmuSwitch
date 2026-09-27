@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <utility>
 #include <switch.h>
@@ -17,6 +18,7 @@
 #include "citra_switch/multi_system.h"
 #include "citra_switch/overlay_menu.h"
 #include "citra_switch/usb_storage.h"
+#include "common/horizon_boost.h"
 #include "common/horizon_thread.h"
 
 namespace Common {
@@ -341,6 +343,9 @@ int main(int argc, char* argv[]) {
     if (!Common::Horizon::PinCurrentThread(Common::Horizon::CoreFrontend)) {
         std::printf("Warning: failed to pin frontend thread to core 0.\n");
     }
+    // Start-up is file work and parsing on the CPU: run it at the boosted clock. The menu
+    // keeps its own boost while it is up.
+    auto boot_boost = std::make_unique<Common::Horizon::CpuBoostScope>();
 
     if (!SwitchFrontend::InitUsbStorage()) {
         std::printf("Warning: %s\n", SwitchFrontend::UsbStorageError().c_str());
@@ -362,6 +367,7 @@ int main(int argc, char* argv[]) {
     SwitchFrontend::InitializeInput();
 
     std::string pending_rom = (argc > 1 && argv[1] != nullptr) ? argv[1] : std::string{};
+    boot_boost.reset();
 
     while (appletMainLoop()) {
         std::string rom;

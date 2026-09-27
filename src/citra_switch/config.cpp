@@ -149,6 +149,7 @@ private:
     std::unique_ptr<INIReader> config;
     std::string config_loc;
     int launch_count = 0;
+    int defaults_version = 0;
 
     void ReadRegistry() {
         for (const SwitchFrontend::SettingEntry& entry : SwitchFrontend::Registry()) {
@@ -173,6 +174,15 @@ private:
 
     void ReadValues() {
         ReadRegistry();
+
+        // One-time changes to defaults for configs written by older builds.
+        defaults_version = static_cast<int>(config->GetInteger("Switch", "defaults_version", 0));
+        if (defaults_version < 1) {
+            // Synchronous shader compilation made games hitch and their audio stutter each time
+            // something new was drawn.
+            Settings::values.async_shader_compilation = true;
+            defaults_version = 1;
+        }
 
         if (Settings::values.render_3d.GetValue() == Settings::StereoRenderOption::Off) {
             Settings::values.factor_3d = 0;
@@ -279,6 +289,8 @@ private:
             out += "# Build that last reached the launcher.\n";
             out += "last_seen_version = " + s_last_seen_version + '\n';
             out += "launch_count = " + std::to_string(launch_count) + '\n';
+            out += "# Which one-time default changes this config has had.\n";
+            out += "defaults_version = " + std::to_string(defaults_version) + '\n';
         }
         {
             std::string& out = section("Camera");
@@ -319,12 +331,14 @@ void ApplyPreset(SwitchFrontend::SettingsPreset preset) {
     using SwitchFrontend::SettingsPreset;
     auto& v = Settings::values;
 
+    // Compiling shaders on the emulation thread stalls the game (and its audio) whenever
+    // something new is drawn; every preset builds them in the background.
+    v.async_shader_compilation = true;
     if (preset == SettingsPreset::Default) {
         return;
     }
 
     v.async_gpu_emulation = true;
-    v.async_shader_compilation = true;
     v.shaders_accurate_mul = false;
     v.disable_right_eye_render = true;
     SwitchFrontend::SetMovieThrottleEnabled(true);

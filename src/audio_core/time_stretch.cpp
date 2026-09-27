@@ -53,9 +53,15 @@ std::size_t TimeStretcher::Process(const s16* in, std::size_t num_in, s16* out,
 
     // This low-pass filter smoothes out variance in the calculated stretch ratio.
     // The time-scale determines how responsive this filter is.
-    constexpr double lpf_time_scale = 0.712; // seconds
-    const double lpf_gain = 1.0 - std::exp(-time_delta / lpf_time_scale);
-    stretch_ratio += lpf_gain * (current_ratio - stretch_ratio);
+    // A callback with no new samples at all is a stall (a shader compiling, a load), not the
+    // game running slow: feeding it in would drag the tempo towards zero, and the backlog would
+    // then come out slowed and repeated for most of a second after the stall. Leave the tempo
+    // be and let the backlog run dry into silence instead.
+    if (num_in > 0) {
+        constexpr double lpf_time_scale = 0.712; // seconds
+        const double lpf_gain = 1.0 - std::exp(-time_delta / lpf_time_scale);
+        stretch_ratio += lpf_gain * (current_ratio - stretch_ratio);
+    }
 
     // Place a lower limit of 5% speed. When a game boots up, there will be
     // many silence samples. These do not need to be timestretched.

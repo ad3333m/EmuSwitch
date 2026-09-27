@@ -109,11 +109,11 @@ std::string DropIn(const std::string& dir, const std::string& stem) {
     return "";
 }
 
-// The covers folder, listed once: lower-case stem -> file. Saves a handful of file checks per
-// game on every rescan.
-std::map<std::string, std::string> ListCovers() {
+// A picture folder (covers/, systems/), listed once: lower-case stem -> file. Saves a handful
+// of file checks per game or system.
+std::map<std::string, std::string> ListPictures(const char* sub) {
     std::map<std::string, std::string> out;
-    const std::string dir = std::string(kRoot) + "/covers";
+    const std::string dir = std::string(kRoot) + "/" + sub;
     DIR* d = opendir(dir.c_str());
     if (!d) return out;
     std::map<std::string, int> rank;
@@ -266,8 +266,19 @@ std::string Decode(const std::string& path, Fit fit, bool contain, Gfx::Image& o
     return "";
 }
 
-std::string ApplySystem(const std::string& id) {
-    const std::string path = SystemArtPath(id);
+std::string ApplySystem(const std::string& id, const std::map<std::string, std::string>* listed = nullptr) {
+    std::string path;
+    if (listed) {
+        ReadConfig();
+        const auto it = s_system_paths.find(id);
+        if (it != s_system_paths.end() && Exists(it->second)) {
+            path = it->second;
+        } else if (const auto l = listed->find(Lower(id)); l != listed->end()) {
+            path = l->second;
+        }
+    } else {
+        path = SystemArtPath(id);
+    }
     if (path.empty()) {
         Skin::SetSystemImage(id, Gfx::Image{});
         return "";
@@ -420,11 +431,12 @@ std::string LoadProfile() {
 }
 
 void LoadSystemArt() {
-    for (const SystemInfo& s : Systems()) ApplySystem(s.id);
+    const auto listed = ListPictures("systems");
+    for (const SystemInfo& s : Systems()) ApplySystem(s.id, &listed);
 }
 
 void LoadGameArt(const std::vector<GameEntry>& games) {
-    const auto covers = ListCovers();
+    const auto covers = ListPictures("covers");
     std::vector<Job> jobs;
     for (const GameEntry& g : games) {
         const std::string path = GamePathWith(g, &covers);

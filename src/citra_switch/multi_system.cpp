@@ -18,6 +18,7 @@
 #include <mutex>
 #include <sys/stat.h>
 #include <thread>
+#include <unordered_set>
 
 #include "citra_switch/emu_zip.h"
 #include "citra_switch/menu_data.h"
@@ -356,9 +357,10 @@ void FinishSetup() {
 }
 
 void AddGames(std::vector<GameEntry>& games) {
-    auto seen = [&games](const std::string& path) {
-        return std::any_of(games.begin(), games.end(), [&](const GameEntry& g) { return g.path == path; });
-    };
+    // A set rather than a search of `games` per file: large libraries made that quadratic.
+    std::unordered_set<std::string> known;
+    for (const GameEntry& g : games) known.insert(g.path);
+    auto seen = [&known](const std::string& path) { return !known.insert(path).second; };
     auto add = [&](const std::string& path, const std::string& name, int only) {
         const std::string low = Lower(path);
         if (low.find("/bios") != std::string::npos) return;
