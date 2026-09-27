@@ -1,0 +1,42 @@
+name: switch-nro
+
+on:
+  push:
+    branches: [ "master" ]
+    tags: [ "*" ]
+  workflow_dispatch:
+    inputs:
+      libnx_ref:
+        description: libnx branch/tag to build against
+        default: master
+
+permissions:
+  contents: write
+
+jobs:
+  nro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Build NXVK toolchain image
+        run: |
+          git clone --depth 1 -b switch https://github.com/PalindromicBreadLoaf/nxvk.git externals/nxvk
+          docker build -t nxvk externals/nxvk/switch/docker
+      - name: Build dekopon.nro
+        run: docker run --rm -e LIBNX_REF="${{ inputs.libnx_ref || 'master' }}" -v "$PWD:/work" -w /work nxvk bash .ci/switch-nro.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dekopon-nro
+          path: artifacts/dekopon.nro
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" artifacts/dekopon.nro --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --notes "Rebuilt against libnx master and the latest devkitA64 for HOS 22.5.0 / Atmosphère 1.11.2."
