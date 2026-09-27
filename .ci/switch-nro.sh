@@ -27,6 +27,8 @@ if [ ! -d externals/nxvk/.git ]; then
     rm -rf externals/nxvk
     git clone --depth 1 -b "$NXVK_REF" https://github.com/PalindromicBreadLoaf/nxvk.git externals/nxvk
 fi
+# NXVK's rust cross-file and rustc wrapper expect its tree at /work/switch.
+ln -sfn "$ROOT/externals/nxvk/switch" /work/switch
 (
     cd externals/nxvk
     bash switch/build/build-native-tools.sh
