@@ -104,7 +104,7 @@ struct ScreenLayoutPreset {
     const char* name;
 };
 
-constexpr std::array<ScreenLayoutPreset, 10> s_layout_presets{{
+constexpr std::array<ScreenLayoutPreset, 11> s_layout_presets{{
     {Settings::LayoutOption::Default, false, false, false,
      Settings::SmallScreenPosition::BottomRight, "Vertical stack"},
     {Settings::LayoutOption::SideScreen, false, false, false,
@@ -125,6 +125,8 @@ constexpr std::array<ScreenLayoutPreset, 10> s_layout_presets{{
      Settings::SmallScreenPosition::BottomRight, "Vertical stack (rotate console other way)"},
     {Settings::LayoutOption::OverlayScreen, false, false, false,
      Settings::SmallScreenPosition::BottomRight, "Bottom screen overlay"},
+    {Settings::LayoutOption::OverlayScreen, false, false, false,
+     Settings::SmallScreenPosition::TopRight, "Big top, small bottom in top right"},
 }};
 
 // Anchors the overlaid screen can snap to.
@@ -154,6 +156,10 @@ void ApplyCurrentLayout() {
     Settings::values.upright_screen = preset.upright_screen;
     Settings::values.upright_screen_flipped = preset.upright_flipped;
     Settings::values.small_screen_position = preset.small_screen_position;
+    // The overlay presets differ only in which corner the small screen snaps to.
+    if (preset.layout == Settings::LayoutOption::OverlayScreen) {
+        Settings::values.overlay_screen_position = preset.small_screen_position;
+    }
     s_layout_update_pending.store(true, std::memory_order_release);
     LOG_INFO(Frontend, "Screen layout: {}", preset.name);
 }
