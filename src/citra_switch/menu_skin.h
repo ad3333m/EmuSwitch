@@ -164,6 +164,7 @@ struct CarouselText {
     bool status_ok = true;
     bool has_picture = false;
     bool picture_button = true; // offer "Change picture"
+    bool moving = false;        // the focused card is being moved: arrows above and below it
 };
 // Draws the carousel with `anim` the (fractional) focused index; `accent` is the eased
 // colour of the focused system.
@@ -176,6 +177,22 @@ bool CarouselPictureButtonHit(const Canvas& c, int x, int y);
 // A shaded game controller in the system's colour, `width` pixels wide, centred on (cx, cy).
 void DrawController(Canvas& c, float cx, float cy, float width, u32 accent, float t);
 
+// ---- Home sections and a console's games ---------------------------------------------------------------
+// How tall a Home section's header is; its games start this far below the header's top.
+constexpr int kSectionHeaderH = 58;
+// A console's logo `h` pixels high at (x, y): the logo picture put in for it (see SetSystemLogo),
+// or its short name in a pill of its colour. Returns the width it took.
+int DrawSystemLogo(Canvas& c, const Fonts& f, const SystemCard& card, int x, int y, int h);
+// The header over a console's games on Home: its logo, its name and game count, and a hairline
+// running on to x + w.
+void DrawSectionHeader(Canvas& c, const Fonts& f, const SystemCard& card, std::string_view name,
+                       std::string_view count, int x, int y, int w, float alpha);
+// A console's card (its picture, or its default look), `s` pixels square, lit in its colour.
+void DrawSystemCard(Canvas& c, const Fonts& f, const SystemCard& card, int x, int y, int s);
+// One game in a list: its picture, name and a detail line. `focus` (0..1) lights the row up.
+void DrawGameRow(Canvas& c, const Fonts& f, const TileInfo& t, std::string_view detail, int x, int y, int w,
+                 int h, float focus);
+
 // ---- pictures ----------------------------------------------------------------------------------------
 // Pictures arrive already scaled down (see custom_art.cpp); the skin keeps them and the
 // exact-size copies it draws.
@@ -183,6 +200,9 @@ void SetSystemImage(const std::string& id, Image img);
 bool HasSystemImage(const std::string& id);
 void SetGameImage(const std::string& path, Image img);
 bool HasGameImage(const std::string& path);
+// A console's logo for its Home section; an empty image goes back to the drawn badge.
+void SetSystemLogo(const std::string& id, Image img);
+bool HasSystemLogo(const std::string& id);
 // Legacy forms taking raw RGBA.
 void SetSystemImage(const std::string& id, std::vector<u32> rgba, int w, int h);
 void SetGameImage(const std::string& path, std::vector<u32> rgba, int w, int h);

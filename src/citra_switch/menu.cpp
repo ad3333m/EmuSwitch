@@ -13,7 +13,9 @@
 #include <cstring>
 #include <ctime>
 #include <functional>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -81,6 +83,68 @@ double NowSeconds() {
     static const u64 start = armGetSystemTick();
     return static_cast<double>(armTicksToNs(armGetSystemTick() - start)) / 1e9;
 }
+
+// Fonts and drawing threads, set up once for the loading screen and the menu.
+bool EnsureMenuGraphics() {
+    static bool tried = false, ok = false;
+    if (tried) {
+        return ok;
+    }
+    tried = true;
+    // Inter from the romfs, with the console's fonts behind it for anything it lacks.
+    g_font_bold.Init("romfs:/fonts/Inter-Bold.ttf");
+    g_font_mark.Init("romfs:/fonts/Inter-BlackItalic.ttf");
+    ok = g_font.Init("romfs:/fonts/Inter-Medium.ttf");
+    // The drawing workers take cores 1 and 2; the menu's own thread keeps core 0.
+    Workers::SetStartHook([](int index) { Common::Horizon::PinCurrentThread(static_cast<std::uint32_t>(1 + index)); });
+    return ok;
+}
+
+// Draws `scene` once without pixels (so every cache it needs is built on this thread), then
+// in bands across the cores, each band going straight into the framebuffer.
+void RenderToFramebuffer(Canvas& canvas, Framebuffer& fb, const std::function<void(Canvas&)>& scene) {
+    {
+        Canvas warm = canvas.View(0, 0);
+        scene(warm);
+    }
+    Skin::EndWarmup();
+    u32 stride = 0;
+    auto* fb_base = static_cast<u8*>(framebufferBegin(&fb, &stride));
+    const int h = canvas.Height();
+    const int rotation = g_rotation;
+    Workers::Get().Run(kBands, [&](int i) {
+        int y0, y1;
+        BandRows(h, i, y0, y1);
+        if (y0 >= y1) {
+            return;
+        }
+        Canvas band = canvas.View(y0, y1);
+        scene(band);
+        WriteBlockLinear(canvas, y0, y1, rotation, fb_base, stride);
+    });
+    framebufferEnd(&fb);
+}
+
+// The loading screen: the app's name over the backdrop, what it's doing, and a spinner.
+void DrawStartupScene(Canvas& c, std::string_view status) {
+    Skin::DrawBackdrop(c);
+    const float cx = g_screen_w / 2.0f, cy = g_screen_h / 2.0f - 70.0f;
+    // A slow breath of light behind the controller mark.
+    const float pulse = 0.5f + 0.5f * std::sin(AnimTime() * 2.2f);
+    c.Glow(static_cast<int>(cx) - 58, static_cast<int>(cy) - 58, 116, 116, 58, 46,
+           WithAlpha(kColAccent, static_cast<u8>(40 + 50 * pulse)), false);
+    Skin::DrawGamepad(c, cx, cy, 112.0f, kColText, 0.0f);
+    const char* name = "EmuSwitch";
+    const int nw = g_font_bold.Measure(name, 46);
+    g_font_bold.Draw(c, static_cast<int>(cx) - nw / 2, static_cast<int>(cy) + 118, name, 46, kColText);
+    const int sw = g_font.Measure(status, 20);
+    g_font.Draw(c, static_cast<int>(cx) - sw / 2, static_cast<int>(cy) + 156, status, 20, kColTextDim);
+    Skin::DrawSpinner(c, cx, cy + 212.0f, 13.0f, AnimTime());
+}
+
+// The loading screen put up before the menu exists; the menu takes its framebuffer over.
+Framebuffer g_splash_fb{};
+bool g_splash_fb_ready = false;
 
 // Exponential approach: `x` covers the given fraction of the way to `target` per `half` seconds.
 float Approach(float x, float target, float dt, float half) {
@@ -154,18 +218,16 @@ u32 NavMask(const MenuDirections& d) {
            (d.right ? DirRight : 0);
 }
 
-enum class Tab { Library, Systems, Install, Settings, Paths, Artic };
+enum class Tab { Library, Systems, Settings, Paths };
 
 // Which pane the cursor lives in.
 enum class Focus { Rail, Content };
 
 // Indexed by Tab, so the order has to match the enum.
-constexpr std::array<std::pair<Tab, const char*>, 6> kRailItems{{{Tab::Library, "Home"},
+constexpr std::array<std::pair<Tab, const char*>, 4> kRailItems{{{Tab::Library, "Home"},
                                                                  {Tab::Systems, "Systems"},
-                                                                 {Tab::Install, "Install"},
                                                                  {Tab::Settings, "Settings"},
-                                                                 {Tab::Paths, "Paths"},
-                                                                 {Tab::Artic, "Artic"}}};
+                                                                 {Tab::Paths, "Paths"}}};
 
 constexpr bool RailItemsMatchTabs() {
     for (int i = 0; i < static_cast<int>(kRailItems.size()); ++i) {
@@ -205,6 +267,8 @@ std::string g_notice;
 int g_notice_frames = 0;
 bool g_notice_is_error = true;
 bool g_auto_update_checked = false;
+// CIA files are looked for once per session, when the menu first opens (and on a refresh).
+bool g_auto_install_checked = false;
 
 // ~4 seconds at 60fps.
 constexpr int kNoticeFrames = 240;
@@ -235,6 +299,16 @@ constexpr int kTabGap = 6;
 struct TabRect {
     int x{};
     int w{};
+};
+
+struct Rect {
+    int x{};
+    int y{};
+    int w{};
+    int h{};
+    bool Contains(int px, int py) const {
+        return px >= x && px < x + w && py >= y && py < y + h;
+    }
 };
 
 // Lays the page chips out as one centred row, tightening the padding rather than overflowing the
@@ -348,15 +422,6 @@ const char* PathRowLabel(int row) {
     }
 }
 
-enum ArticRow {
-    ArticRowAddress,
-    ArticRowConnect,
-    ArticRowOld3ds,
-    ArticRowNew3ds,
-    ArticRowController,
-    ArticRowCount,
-};
-
 // The country picker is the one modal list long enough to need paging.
 constexpr int kCountryRows = 9;
 constexpr int kCountryRowH = 40;
@@ -397,9 +462,10 @@ int DrawHint(Canvas& canvas, int x, int y, const char* button, const char* label
 
 const std::vector<Skin::DockItem>& DockItems() {
     static const std::vector<Skin::DockItem> items = {
-        {"Home", Skin::DockIcon::Home},       {"Systems", Skin::DockIcon::Systems},
-        {"Install", Skin::DockIcon::Install}, {"Settings", Skin::DockIcon::Settings},
-        {"Paths", Skin::DockIcon::Folder},    {"Artic", Skin::DockIcon::Text, "AB"},
+        {"Home", Skin::DockIcon::Home},
+        {"Systems", Skin::DockIcon::Systems},
+        {"Settings", Skin::DockIcon::Settings},
+        {"Paths", Skin::DockIcon::Folder},
     };
     return items;
 }
@@ -479,84 +545,10 @@ std::string PromptSearch(const std::string& initial) {
     return R_SUCCEEDED(rc) ? std::string{out} : initial;
 }
 
-std::optional<std::string> PromptArticAddress(const std::string& initial) {
-    SwkbdConfig kbd;
-    if (R_FAILED(swkbdCreate(&kbd, 0))) {
-        return std::nullopt;
-    }
-    swkbdConfigMakePresetDefault(&kbd);
-    swkbdConfigSetHeaderText(&kbd, "Artic server address");
-    swkbdConfigSetGuideText(&kbd, "3DS IP address :port");
-    swkbdConfigSetInitialText(&kbd, initial.c_str());
-    swkbdConfigSetStringLenMax(&kbd, 255);
-    char out[512] = {};
-    const Result rc = swkbdShow(&kbd, out, sizeof(out));
-    swkbdClose(&kbd);
-    if (R_FAILED(rc)) {
-        return std::nullopt;
-    }
-    std::string address{out};
-    const auto first = std::find_if_not(address.begin(), address.end(), [](unsigned char c) {
-        return std::isspace(c) != 0;
-    });
-    const auto last = std::find_if_not(address.rbegin(), address.rend(), [](unsigned char c) {
-                          return std::isspace(c) != 0;
-                      }).base();
-    return first < last ? std::string(first, last) : std::string{};
-}
-
-bool IsValidArticAddress(const std::string& address) {
-    if (address.empty() || address.find('/') != std::string::npos ||
-        std::any_of(address.begin(), address.end(),
-                    [](unsigned char c) { return std::isspace(c) != 0; })) {
-        return false;
-    }
-    const std::size_t colon = address.find(':');
-    const std::string host = address.substr(0, colon);
-    if (host.empty() ||
-        !std::all_of(host.begin(), host.end(), [](unsigned char c) {
-            return std::isalnum(c) != 0 || c == '.' || c == '-' || c == '_';
-        })) {
-        return false;
-    }
-    if (colon == std::string::npos) {
-        return true;
-    }
-    if (colon != address.rfind(':') || colon + 1 == address.size()) {
-        return false;
-    }
-    const std::string port = address.substr(colon + 1);
-    if (!std::all_of(port.begin(), port.end(),
-                     [](unsigned char c) { return std::isdigit(c) != 0; })) {
-        return false;
-    }
-    const unsigned long value = std::strtoul(port.c_str(), nullptr, 10);
-    return value > 0 && value <= 0xFFFF;
-}
-
 std::string FormatTitleId(u64 program_id) {
     char buf[24];
     std::snprintf(buf, sizeof(buf), "%016llX", static_cast<unsigned long long>(program_id));
     return buf;
-}
-
-// Updates and DLC ride on a base title rather than standing alone, so they get the accent.
-u32 KindBadgeColor(TitleKind kind) {
-    switch (kind) {
-    case TitleKind::Update:
-    case TitleKind::AddOnContent:
-        return kColAccentDim;
-    default:
-        return kColBadge;
-    }
-}
-
-// The Install page lists the CIAs in one folder.
-constexpr int kInstallHeaderH = 40;
-constexpr int kInstallTop = kContentTop + kInstallHeaderH + 8;
-constexpr int kInstallRowH = 46;
-int InstallRows() {
-    return std::max(1, (ContentBottom() - kInstallTop) / kInstallRowH);
 }
 
 // Modal panel listing what is installed alongside one library entry.
@@ -829,10 +821,9 @@ InfoCard BuildWelcomeCard() {
     card.pages.push_back(MakeInfoPage(
         "Your games",
         {"EmuSwitch lists the games it finds in:", paths.roms_dir, "and in sdmc:/roms/<system>/ (3ds, ds, gba, gb, ps2, wiiu).", "",
-         "- 3DS, CCI, CXI, 3DSX, APP and CIA files are all recognised.",
-         "- DS, GBA, Game Boy, PS2 and Wii U games open in their own emulator.",
+         "- 3DS, CCI, CXI, 3DSX and APP files are recognised; CIA files install by themselves.",
+         "- DS, GBA, Game Boy, NES, SNES, N64, PS1, PS2, PSP and Wii U games open in their own emulator.",
          "- PS2: drop your BIOS .zip or .bin into sdmc:/roms/ps2/.",
-         "- The Install tab installs CIAs to the emulated SD card.",
          "- The Paths tab moves that folder, adds a second one, and can scan subfolders."},
         max_w));
     card.pages.push_back(MakeInfoPage(
@@ -871,12 +862,16 @@ class Menu {
 public:
     MenuResult Run(PadState& pad) {
         pad_state = &pad;
-        // Put a frame up before the ROM scan
+        LoadSystemOrder();
         EnsureFramebuffer();
         ApplyRotation();
-        DrawLoading();
-        Rescan();
+        // The loading screen keeps moving while the library is read.
+        LoadLibrary();
         library_intro = NowSeconds();
+        if (!g_auto_install_checked) {
+            g_auto_install_checked = true;
+            StartAutoInstall();
+        }
         if (!g_auto_update_checked) {
             g_auto_update_checked = true;
             ShowStartupCard();
@@ -888,15 +883,18 @@ public:
             const u64 down = padGetButtonsDown(&pad);
             held = padGetButtons(&pad);
             PumpUpdater();
+            PumpInstall();
 
             if (!install_active && ConsumeUsbStorageChange()) {
                 HandleUsbStorageChange();
             }
 
-            // +/- together exits the app, but will not allow during an install.
-            if (!install_active && !update_download_active &&
-                (held & (HidNpadButton_Plus | HidNpadButton_Minus)) ==
-                    (HidNpadButton_Plus | HidNpadButton_Minus)) {
+            // +/- together exits the app, but not while a CIA is installing.
+            constexpr u64 kExitChord = HidNpadButton_Plus | HidNpadButton_Minus;
+            if (install_active && (held & kExitChord) == kExitChord && (down & kExitChord)) {
+                NoticeInstallBusy("close EmuSwitch");
+            }
+            if (!install_active && !update_download_active && (held & kExitChord) == kExitChord) {
                 if (remap_open) {
                     CloseRemap();
                 }
@@ -939,8 +937,6 @@ public:
                 }
             } else if (update_download_active || UpdateModalOpen()) {
                 // The worker is pumped above and its modal is drawn below.
-            } else if (install_active) {
-                PumpInstall();
             } else if (confirm) {
                 HandleConfirm(down);
             } else if (preset_picker_open) {
@@ -979,25 +975,30 @@ public:
             } else if (tab == Tab::Library) {
                 done = HandleLibrary(down, nav, result);
             } else if (tab == Tab::Systems) {
-                HandleSystems(down, nav);
-            } else if (tab == Tab::Install) {
-                HandleInstall(down, nav);
+                done = HandleSystems(down, nav, result);
             } else if (tab == Tab::Settings) {
                 done = HandleSettings(down, nav, dpad_nav);
-            } else if (tab == Tab::Paths) {
-                done = HandlePaths(down, nav);
             } else {
-                done = HandleArtic(down, nav, result);
+                done = HandlePaths(down, nav);
+            }
+            if (done && result.action == MenuAction::Launch && install_active) {
+                // A game can't start while the emulated SD card is being written to.
+                NoticeInstallBusy("play");
+                done = false;
             }
             if (done) {
                 return result;
             }
 
-            if (!install_active && !update_download_active && !update_installed &&
+            if (!update_download_active && !update_installed &&
                 !UpdateModalOpen() && !info_card && !details_open && !saves_open &&
                 !layout_picker_open && !remap_open && !preset_picker_open && !country_picker_open &&
                 !confirm && !PerGameOpen()) {
                 HandleTouch();
+            }
+            if (pending_launch && install_active) {
+                NoticeInstallBusy("play");
+                pending_launch.reset();
             }
             if (pending_launch) {
                 MenuResult launch{MenuAction::Launch, *pending_launch};
@@ -1039,13 +1040,28 @@ private:
     std::vector<GameEntry> games;
     std::vector<int> filtered; // Indices into `games` after search filtering.
     int selected = 0;          // Index into `filtered`.
-    int scroll_row = 0;
+    // Home: one section per console, in the Systems page's order; each a header and rows of tiles.
+    struct HomeSection {
+        int system; // Multi::Systems() index, -1 for the 3DS
+        int first;  // index into `filtered`
+        int count;
+        float y;    // top of its header, in pixels from the top of the list
+    };
+    struct HomeRow {
+        int section;
+        int first; // index into `filtered`
+        int count;
+        float y; // top of its tiles, in pixels from the top of the list
+    };
+    std::vector<HomeSection> home_sections;
+    std::vector<HomeRow> home_rows;
+    std::vector<int> home_row_of; // `filtered` index -> row
+    float home_height = 0.0f;
+    int home_cols = 0;
+    float home_top = 0.0f; // where the list is scrolled to, in pixels
     int paths_sel = 0;
-    int artic_sel = 0;
     std::string search;
     SwitchPaths paths{};
-    SystemFileSetupState artic_install_state{};
-    bool artic_state_loaded = false;
 
     // Settings tab.
     Category settings_page{Category::General};
@@ -1094,7 +1110,7 @@ private:
     float page_dir = 0.0f;  // -1 from the left, +1 from the right
     int modal_kind = 0;
     float modal_anim = 1.0f;
-    Spring grid_scroll;     // rows, eased towards scroll_row
+    Spring grid_scroll;     // pixels, eased towards home_top
     Spring cursor_x, cursor_y;
     bool cursor_ready = false;
     Spring lift;            // how far the focused tile has popped up
@@ -1142,22 +1158,24 @@ private:
     };
     std::optional<ConfirmPrompt> confirm;
 
-    // Install page.
-    std::string install_dir;
-    std::vector<DirEntry> install_dirs;
-    std::vector<CiaEntry> install_cias;
-    int install_sel = 0;
-    int install_scroll = 0;
-    bool install_listed = false; // Whether install_dir has been read at least once.
-
-    // The installation worker.
+    // CIA files found in the ROM folders install themselves in the background, one at a time.
     std::thread install_thread;
     std::atomic<bool> install_done{false};
     std::atomic<std::size_t> install_written{0};
     std::atomic<std::size_t> install_total{0};
-    InstallResult install_result{};
+    std::atomic<int> install_index{0}; // 1-based; 0 while the CIAs are still being checked
+    std::atomic<int> install_count{0};
+    std::mutex install_mutex; // guards the name and the results below
     std::string install_name;
+    int install_ok = 0;
+    std::string install_last_ok;
+    std::vector<std::pair<std::string, std::string>> install_failures; // path, message
     bool install_active = false;
+    std::set<std::string> install_skip; // CIAs that failed this session aren't tried again
+    // What the progress pill shows, sampled in PrepareFrame().
+    std::string install_label;
+    float install_frac = 0.0f;
+    float install_pill = 0.0f; // 0..1, fades the pill in and out
 
     // GitHub update checker/downloader. Only one updater worker is active at a time.
     std::thread updater_thread;
@@ -1186,11 +1204,6 @@ private:
         Art::LoadGameArt(games);
         paths = GetPaths();
         RefreshRomsDir2Presence();
-        // Only seeds the Install page's starting folder: once it has been browsed, an empty
-        // install_dir means the device list and must be left alone.
-        if (!install_listed && install_dir.empty()) {
-            install_dir = paths.roms_dir;
-        }
         ApplyFilter();
     }
 
@@ -1229,6 +1242,7 @@ private:
                 ShowBusy("Refreshing library...");
                 search.clear();
                 Rescan();
+                StartAutoInstall();
             }
         }
         if (next != tab) {
@@ -1242,18 +1256,9 @@ private:
         if (tab == Tab::Paths) {
             RefreshRomsDir2Presence();
         }
-        if (tab == Tab::Install && !install_listed) {
-            ShowBusy("Reading CIAs...");
-            RefreshInstallList();
-        }
         if (tab == Tab::Settings) {
             RefreshShaderCacheSize();
             SetSettingsPage(settings_page);
-        }
-        if (tab == Tab::Artic && !artic_state_loaded) {
-            ShowBusy("Checking system files...");
-            artic_install_state = GetSystemFileSetupState();
-            artic_state_loaded = true;
         }
     }
 
@@ -1375,15 +1380,85 @@ private:
         filtered.clear();
         const std::string needle = ToLowerAscii(search);
         for (int i = 0; i < static_cast<int>(games.size()); ++i) {
-            if (system_filter != kNoSystemFilter && games[i].system != system_filter) {
-                continue;
-            }
             if (needle.empty() || ToLowerAscii(games[i].title).find(needle) != std::string::npos) {
                 filtered.push_back(i);
             }
         }
+        // Grouped by console in the player's order; the titles stay sorted within each.
+        std::stable_sort(filtered.begin(), filtered.end(), [this](int a, int b) {
+            return SystemRank(games[static_cast<std::size_t>(a)].system) <
+                   SystemRank(games[static_cast<std::size_t>(b)].system);
+        });
         selected = std::clamp(selected, 0, std::max(0, static_cast<int>(filtered.size()) - 1));
-        scroll_row = 0;
+        BuildHomeLayout();
+        home_top = 0.0f;
+        grid_scroll.Snap(0.0f);
+        cursor_ready = false;
+    }
+
+    static constexpr int kSectionGap = 24; // between a section's last row and the next header
+
+    static int HomeViewTop() {
+        return kContentTop + 4;
+    }
+    static int HomeViewBottom() {
+        return g_screen_h - kHintH - 40;
+    }
+    static float HomeViewH() {
+        return static_cast<float>(HomeViewBottom() - HomeViewTop());
+    }
+
+    void BuildHomeLayout() {
+        const Grid grid = ComputeGrid();
+        home_cols = grid.cols;
+        home_sections.clear();
+        home_rows.clear();
+        home_row_of.assign(filtered.size(), 0);
+        const int step = kTileH + kTileGap;
+        const int n = static_cast<int>(filtered.size());
+        float y = 0.0f;
+        for (int i = 0; i < n;) {
+            const int sys = games[static_cast<std::size_t>(filtered[static_cast<std::size_t>(i)])].system;
+            int j = i;
+            while (j < n && games[static_cast<std::size_t>(filtered[static_cast<std::size_t>(j)])].system == sys) {
+                ++j;
+            }
+            home_sections.push_back({sys, i, j - i, y});
+            y += Skin::kSectionHeaderH;
+            for (int k = i; k < j; k += grid.cols) {
+                const int cnt = std::min(grid.cols, j - k);
+                for (int m = k; m < k + cnt; ++m) {
+                    home_row_of[static_cast<std::size_t>(m)] = static_cast<int>(home_rows.size());
+                }
+                home_rows.push_back({static_cast<int>(home_sections.size()) - 1, k, cnt, y});
+                y += step;
+            }
+            y += kSectionGap - kTileGap;
+            i = j;
+        }
+        home_height = home_rows.empty() ? 0.0f : home_rows.back().y + kTileH;
+    }
+
+    // The tile in the row above (dir -1) or below (+1) `index`, in the same column where it can.
+    int RowNeighbour(int index, int dir) const {
+        if (index < 0 || index >= static_cast<int>(home_row_of.size())) {
+            return index;
+        }
+        const int r = home_row_of[static_cast<std::size_t>(index)];
+        const int nr = r + dir;
+        if (nr < 0 || nr >= static_cast<int>(home_rows.size())) {
+            return index;
+        }
+        const int col = index - home_rows[static_cast<std::size_t>(r)].first;
+        const HomeRow& next = home_rows[static_cast<std::size_t>(nr)];
+        return next.first + std::min(col, next.count - 1);
+    }
+
+    // Where tile `index` sits on screen with the list scrolled to `scroll`.
+    void HomeTilePos(const Grid& grid, int index, float scroll, float& x, float& y) const {
+        const HomeRow& row = home_rows[static_cast<std::size_t>(home_row_of[static_cast<std::size_t>(index)])];
+        x = static_cast<float>(grid.start_x + (index - row.first) * (kTileW + kTileGap));
+        y = HomeViewTop() + row.y - scroll;
     }
 
     // Returns true if the menu should return `result` to the caller.
@@ -1398,10 +1473,10 @@ private:
                 selected = std::min(count - 1, selected + 1);
             }
             if (nav & DirUp) {
-                selected = std::max(0, selected - grid.cols);
+                selected = RowNeighbour(selected, -1);
             }
             if (nav & DirDown) {
-                selected = std::min(count - 1, selected + grid.cols);
+                selected = RowNeighbour(selected, +1);
             }
             if (down & HidNpadButton_A) {
                 result = {MenuAction::Launch, games[filtered[selected]].path};
@@ -1431,15 +1506,10 @@ private:
             ShowBusy("Refreshing library…");
             search.clear();
             Rescan();
+            StartAutoInstall();
         }
         if (down & HidNpadButton_B) {
-            if (system_filter != kNoSystemFilter) {
-                // Back out of one system's games to everything.
-                system_filter = kNoSystemFilter;
-                ApplyFilter();
-            } else {
-                EnterRail();
-            }
+            EnterRail();
         }
         EnsureVisible(grid);
         return false;
@@ -1574,130 +1644,111 @@ private:
                    !ok);
     }
 
-    // Row model for the Install page: ".." (unless listing devices), then subfolders, then CIAs.
-    int InstallParentRows() const {
-        return install_dir.empty() ? 0 : 1;
-    }
-
-    int InstallRowCount() const {
-        return InstallParentRows() + static_cast<int>(install_dirs.size()) +
-               static_cast<int>(install_cias.size());
-    }
-
-    // The CIA under the cursor, or nothing when it sits on ".." or a folder.
-    const CiaEntry* SelectedCia() const {
-        const int i = install_sel - InstallParentRows() - static_cast<int>(install_dirs.size());
-        if (i < 0 || i >= static_cast<int>(install_cias.size())) {
-            return nullptr;
-        }
-        return &install_cias[i];
-    }
-
-    void RefreshInstallList() {
-        // Stepping up out of a device root lands on the device list, which holds no files.
-        install_dirs = install_dir.empty() ? ListDevices() : ListSubdirectories(install_dir);
-        install_cias = install_dir.empty() ? std::vector<CiaEntry>{} : ListCiaFiles(install_dir);
-        install_sel = std::clamp(install_sel, 0, std::max(0, InstallRowCount() - 1));
-        install_listed = true;
-    }
-
-    void EnterInstallDir(const std::string& next) {
-        install_dir = next;
-        install_sel = 0;
-        install_scroll = 0;
-        RefreshInstallList();
-    }
-
-    void HandleInstall(u64 down, u32 nav) {
-        const int count = InstallRowCount();
-        install_sel = std::clamp(install_sel, 0, std::max(0, count - 1));
-        if (nav & DirUp) {
-            install_sel = std::max(0, install_sel - 1);
-        }
-        if (nav & DirDown) {
-            install_sel = std::min(std::max(0, count - 1), install_sel + 1);
-        }
-        install_scroll = std::clamp(install_scroll, std::max(0, install_sel - InstallRows() + 1),
-                                    std::max(0, std::min(install_sel, count - InstallRows())));
-        if (down & HidNpadButton_A) {
-            const int base = InstallParentRows();
-            const int di = install_sel - base;
-            if (base == 1 && install_sel == 0) {
-                EnterInstallDir(ParentDirectory(install_dir));
-            } else if (di < static_cast<int>(install_dirs.size())) {
-                EnterInstallDir(install_dirs[di].path);
-            } else if (const CiaEntry* cia = SelectedCia()) {
-                TryStartInstall(*cia);
-            }
-        }
-        if (down & HidNpadButton_Y) {
-            ShowBusy("Reading CIAs...");
-            RefreshInstallList();
-        }
-        if (down & HidNpadButton_B) {
-            EnterRail();
-        }
-    }
-
-    void TryStartInstall(const CiaEntry& cia) {
-        if (!cia.readable) {
-            ShowNotice(cia.name + ": not a valid CIA", true);
+    // Installs, in the background and one at a time, the CIA files the last scan found in the
+    // ROM folders that aren't installed yet. Games show up in the library as they're done.
+    void StartAutoInstall() {
+        if (install_active) {
             return;
         }
-        if (ConfirmInstall(cia)) {
-            StartInstall(cia);
+        std::vector<std::string> cias;
+        for (std::string& path : ScannedCiaFiles()) {
+            if (!install_skip.count(path)) {
+                cias.push_back(std::move(path));
+            }
         }
-    }
-
-    void StartInstall(const CiaEntry& cia) {
-        install_name = cia.name;
-        install_written = 0;
-        install_total = cia.size;
-        install_done = false;
+        if (cias.empty()) {
+            return;
+        }
         install_active = true;
-        install_thread = std::thread([this, path = cia.path] {
-            const Common::Horizon::CpuBoostScope boost;
-            install_result = InstallCia(path, [this](std::size_t written, std::size_t total) {
-                install_written = written;
-                install_total = total;
-            });
+        install_done = false;
+        install_index = 0;
+        install_count = 0;
+        install_written = 0;
+        install_total = 0;
+        {
+            std::lock_guard lock{install_mutex};
+            install_name.clear();
+            install_ok = 0;
+            install_last_ok.clear();
+            install_failures.clear();
+        }
+        install_thread = std::thread([this, cias = std::move(cias)] {
+            const std::vector<CiaEntry> todo = CiasToInstall(cias);
+            install_count = static_cast<int>(todo.size());
+            for (std::size_t i = 0; i < todo.size(); ++i) {
+                const CiaEntry& cia = todo[i];
+                std::string name = cia.name;
+                if (const std::size_t dot = name.rfind('.'); dot != std::string::npos && dot > 0) {
+                    name.resize(dot);
+                }
+                {
+                    std::lock_guard lock{install_mutex};
+                    install_name = name;
+                }
+                install_written = 0;
+                install_total = cia.size;
+                install_index = static_cast<int>(i) + 1;
+                InstallResult result = InstallResult::Invalid;
+                if (cia.readable) {
+                    const Common::Horizon::CpuBoostScope boost;
+                    result = InstallCia(cia.path, [this](std::size_t written, std::size_t total) {
+                        install_written = written;
+                        install_total = total;
+                    });
+                }
+                std::lock_guard lock{install_mutex};
+                if (result == InstallResult::Success) {
+                    ++install_ok;
+                    install_last_ok = name;
+                } else {
+                    install_failures.emplace_back(cia.path, name + ": " + InstallResultText(result));
+                }
+            }
             install_done = true;
         });
     }
 
     void PumpInstall() {
-        if (!install_done) {
+        if (!install_active || !install_done) {
             return;
         }
         install_thread.join();
         install_active = false;
-        const bool ok = install_result == InstallResult::Success;
-        ShowNotice(install_name + ": " + InstallResultText(install_result), !ok);
-        RefreshInstallList();
-        if (ok) {
-            // A successful install may have put a new title in the library's reach.
-            games = ScanGames();
-            Art::LoadGameArt(games);
-            ApplyFilter();
+        int ok = 0;
+        std::string last_ok;
+        std::vector<std::pair<std::string, std::string>> failures;
+        {
+            std::lock_guard lock{install_mutex};
+            ok = install_ok;
+            last_ok = install_last_ok;
+            failures.swap(install_failures);
+        }
+        for (const auto& failure : failures) {
+            install_skip.insert(failure.first);
+        }
+        if (ok > 0) {
+            // The new titles join the library.
+            Rescan();
+        }
+        if (!failures.empty()) {
+            std::string text = failures.front().second;
+            if (failures.size() > 1) {
+                text += " (and " + std::to_string(failures.size() - 1) + " more)";
+            }
+            ShowNotice("Couldn't install " + text, true);
+        } else if (ok > 0) {
+            ShowNotice(ok == 1 ? last_ok + " installed" : std::to_string(ok) + " games installed", false);
         }
     }
 
-    // Blocks on a yes/no prompt.
-    bool ConfirmInstall(const CiaEntry& cia) {
-        u16 installed_version = 0;
-        const bool replacing = GetInstalledVersion(cia.program_id, installed_version);
-        while (appletMainLoop()) {
-            padUpdate(pad_state);
-            const u64 down = padGetButtonsDown(pad_state);
-            if (down & HidNpadButton_A) {
-                return true;
-            }
-            if (down & HidNpadButton_B) {
-                return false;
-            }
-            Frame([&](Canvas& c) { DrawConfirmInstall(c, cia, replacing, installed_version); });
-        }
-        return false;
+    // What's being installed, for the notices.
+    std::string InstallingName() {
+        std::lock_guard lock{install_mutex};
+        return install_name.empty() ? std::string{"a game"} : install_name;
+    }
+
+    void NoticeInstallBusy(const char* what) {
+        ShowNotice("Installing " + InstallingName() + " - you can " + what + " once it's done", true);
     }
 
     // Move the cursor out to the Library/Settings rail
@@ -2490,94 +2541,6 @@ private:
         return false;
     }
 
-    bool EditArticAddress() {
-        const std::optional<std::string> address = PromptArticAddress(GetArticBaseAddress());
-        if (!address) {
-            return false;
-        }
-        if (!IsValidArticAddress(*address)) {
-            ShowNotice("Enter the 3DS' IP address followed by :port", true);
-            return false;
-        }
-        SetArticBaseAddress(*address);
-        return true;
-    }
-
-    bool EnsureArticAddress() {
-        if (IsValidArticAddress(GetArticBaseAddress())) {
-            return true;
-        }
-        return EditArticAddress();
-    }
-
-    bool ConfirmArticSetup(bool old3ds, bool replacing) {
-        while (appletMainLoop()) {
-            padUpdate(pad_state);
-            const u64 down = padGetButtonsDown(pad_state);
-            if (down & HidNpadButton_A) {
-                return true;
-            }
-            if (down & HidNpadButton_B) {
-                return false;
-            }
-            Frame([&](Canvas& c) { DrawArticSetupConfirm(c, old3ds, replacing); });
-        }
-        return false;
-    }
-
-    bool ActivateArtic(MenuResult& result) {
-        if (artic_sel == ArticRowAddress) {
-            EditArticAddress();
-            return false;
-        }
-        if (artic_sel == ArticRowController) {
-            SetUseArticBaseController(!GetUseArticBaseController());
-            return false;
-        }
-        const bool old3ds = artic_sel == ArticRowOld3ds;
-        if (artic_sel == ArticRowNew3ds && !artic_install_state.old3ds) {
-            ShowNotice("Old 3DS system files must be set up first", true);
-            return false;
-        }
-        if (!EnsureArticAddress()) {
-            return false;
-        }
-        if (artic_sel == ArticRowConnect) {
-            result = {MenuAction::Launch, "articbase://" + GetArticBaseAddress()};
-            return true;
-        }
-
-        const bool replacing =
-            old3ds ? artic_install_state.old3ds : artic_install_state.new3ds;
-        if (!ConfirmArticSetup(old3ds, replacing)) {
-            return false;
-        }
-
-        ShowBusy("Preparing system-file setup...");
-        PrepareSystemFileSetup(old3ds ? SystemFileSetupMode::Old3ds
-                                     : SystemFileSetupMode::New3ds);
-        result = {MenuAction::Launch,
-                  std::string{old3ds ? "articinio://" : "articinin://"} +
-                      GetArticBaseAddress()};
-        return true;
-    }
-
-    bool HandleArtic(u64 down, u32 nav, MenuResult& result) {
-        if (nav & DirUp) {
-            artic_sel = std::max(0, artic_sel - 1);
-        }
-        if (nav & DirDown) {
-            artic_sel = std::min(ArticRowCount - 1, artic_sel + 1);
-        }
-        if (down & HidNpadButton_A) {
-            return ActivateArtic(result);
-        }
-        if (down & HidNpadButton_B) {
-            EnterRail();
-        }
-        return false;
-    }
-
     std::string& PathRowValue(int row) {
         switch (row) {
         case PathRowUserDir:
@@ -2625,15 +2588,24 @@ private:
     }
 
     void EnsureVisible(const Grid& grid) {
-        if (filtered.empty()) {
+        if (grid.cols != home_cols) {
+            BuildHomeLayout(); // the menu turned on its side
+        }
+        if (filtered.empty() || home_rows.empty()) {
             return;
         }
-        const int row = selected / grid.cols;
-        if (row < scroll_row) {
-            scroll_row = row;
-        } else if (row >= scroll_row + grid.visible_rows) {
-            scroll_row = row - grid.visible_rows + 1;
+        const HomeRow& row = home_rows[static_cast<std::size_t>(home_row_of[static_cast<std::size_t>(selected)])];
+        // The first row of a section brings its header along.
+        const bool first_row = home_sections[static_cast<std::size_t>(row.section)].first == row.first;
+        const float top = row.y - (first_row ? static_cast<float>(Skin::kSectionHeaderH) : 14.0f);
+        const float bottom = row.y + kTileH + 14.0f;
+        const float view_h = HomeViewH();
+        if (top < home_top) {
+            home_top = top;
+        } else if (bottom > home_top + view_h) {
+            home_top = bottom - view_h;
         }
+        home_top = std::clamp(home_top, 0.0f, std::max(0.0f, home_height + 14.0f - view_h));
     }
 
     void HandleTouch() {
@@ -2700,22 +2672,44 @@ private:
                 }
             }
         } else if (tab == Tab::Systems) {
+            if (system_menu_open) {
+                // The one entry picks the console up; anywhere else closes the menu.
+                system_menu_open = false;
+                if (SystemMenuRowRect().Contains(tx, ty)) {
+                    BeginSystemMove();
+                }
+                return;
+            }
+            if (system_moving) {
+                return; // Carried with the buttons; A drops it.
+            }
+            if (system_games_open) {
+                // Tap a game to highlight it, tap it again to play.
+                const int top = GameListTop();
+                if (tx < kGameListX || ty < top || ty >= GameListBottom()) {
+                    return;
+                }
+                const int i = static_cast<int>((ty - top + system_games_scroll.x) / kGameRowStep);
+                if (i >= 0 && i < static_cast<int>(system_games.size())) {
+                    if (i == system_games_sel) {
+                        pending_launch = games[static_cast<std::size_t>(system_games[static_cast<std::size_t>(i)])].path;
+                    }
+                    system_games_sel = i;
+                    EnsureGameListVisible();
+                }
+                return;
+            }
             // Tap a card to bring it forward, tap the focused one to see its games, or tap the
             // picture button.
             if (IsPictureEditingEnabled() && Skin::CarouselPictureButtonHit(canvas, tx, ty)) {
                 PickSystemPicture();
                 return;
             }
-            const int hit = Skin::CarouselHitTest(canvas, static_cast<int>(Art::Systems().size()), systems_anim, tx, ty);
+            const int hit = Skin::CarouselHitTest(canvas, static_cast<int>(system_order.size()), systems_anim, tx, ty);
             if (hit >= 0 && hit == systems_sel) {
                 OpenSystemGames();
             } else if (hit >= 0) {
                 systems_sel = hit;
-            }
-        } else if (tab == Tab::Install) {
-            const int row = install_scroll + (ty - kInstallTop) / kInstallRowH;
-            if (ty >= kInstallTop && ty < ContentBottom() && row < InstallRowCount()) {
-                install_sel = row;
             }
         } else if (tab == Tab::Settings) {
             const std::optional<int> page =
@@ -2758,33 +2752,21 @@ private:
                 }
                 break;
             }
-        } else {
-            constexpr int row_top = kContentTop + 112;
-            constexpr int row_stride = 78;
-            const int row = (ty - row_top) / row_stride;
-            if (ty >= row_top && row >= 0 && row < ArticRowCount) {
-                if (artic_sel == row) {
-                    MenuResult result;
-                    if (ActivateArtic(result)) {
-                        pending_launch = std::move(result.path);
-                    }
-                } else {
-                    artic_sel = row;
-                }
-            }
         }
     }
 
     // Screen rect of filtered tile `i` given the current scroll.
     bool TileRect(const Grid& grid, int i, int& out_x, int& out_y) {
-        const int row = i / grid.cols;
-        const int col = i % grid.cols;
-        const int y = grid.top + (row - scroll_row) * (kTileH + kTileGap);
-        if (row < scroll_row || row >= scroll_row + grid.visible_rows) {
+        if (i < 0 || i >= static_cast<int>(home_row_of.size())) {
             return false;
         }
-        out_x = grid.start_x + col * (kTileW + kTileGap);
-        out_y = y;
+        float x, y;
+        HomeTilePos(grid, i, grid_scroll.x, x, y);
+        if (y < HomeViewTop() - 8 || y + kTileH > HomeViewBottom() + 8) {
+            return false;
+        }
+        out_x = static_cast<int>(x);
+        out_y = static_cast<int>(std::lround(y));
         return true;
     }
 
@@ -3054,117 +3036,6 @@ private:
         }
     }
 
-    void DrawArticPage(Canvas& c) {
-        const bool content_focus = focus == Focus::Content;
-        const int x = kContentX + 24;
-        const int w = ContentW() - 48;
-
-        g_font.Draw(c, x + 12, kContentTop + 30,
-                    "Run Artic Base or Azahar Artic Setup Tool on a 3DS on this network.", 18,
-                    kColTextDim);
-
-        constexpr int row_top = kContentTop + 112;
-        constexpr int row_h = 68;
-        constexpr int row_stride = 78;
-        for (int i = 0; i < ArticRowCount; ++i) {
-            const int y = row_top + i * row_stride;
-            const bool on = i == artic_sel;
-            if (on) {
-                Skin::DrawRow(c, x, y, w, row_h, content_focus);
-            }
-
-            const char* label = "";
-            std::string value;
-            u32 value_color = on && content_focus ? kColAccent : kColTextDim;
-            switch (i) {
-            case ArticRowAddress:
-                label = "Server Address";
-                value = GetArticBaseAddress().empty() ? "Not set" : GetArticBaseAddress();
-                break;
-            case ArticRowConnect:
-                label = "Connect to Artic Base";
-                value = "Play a game off a real 3DS";
-                break;
-            case ArticRowOld3ds:
-                label = "Set Up Old 3DS System Files";
-                value = artic_install_state.old3ds ? "Installed! Select to reinstall" : "Ready";
-                break;
-            case ArticRowNew3ds:
-                label = "Set Up New 3DS System Files";
-                if (!artic_install_state.old3ds) {
-                    value = "Old 3DS setup required first";
-                    value_color = kColError;
-                } else {
-                    value = artic_install_state.new3ds ? "Installed! Select to reinstall"
-                                                      : "Ready";
-                }
-                break;
-            default:
-                label = "Use Real 3DS as a Controller";
-                value = GetUseArticBaseController() ? "On" : "Off";
-                break;
-            }
-            g_font.Draw(c, x + 20, y + 27, label, 21, kColText);
-            g_font.Draw(c, x + 20, y + 52, g_font.Truncate(value, 17, w - 44), 17, value_color);
-        }
-
-        g_font.Draw(c, x + 12, ContentBottom() - 30,
-                    "System setup installs unique console data. Keep your EmuSwitch folder private.",
-                    16, kColTextDim);
-
-        if (focus == Focus::Rail) {
-            DrawRailHints(c);
-        } else {
-            const char* action = "Select";
-            if (artic_sel == ArticRowAddress) {
-                action = "Edit";
-            } else if (artic_sel == ArticRowConnect) {
-                action = "Connect";
-            } else if (artic_sel == ArticRowOld3ds || artic_sel == ArticRowNew3ds) {
-                action = "Set Up";
-            } else if (artic_sel == ArticRowController) {
-                action = "Toggle";
-            }
-            int hx = HintX();
-            const int hy = g_screen_h - 44;
-            hx += DrawHint(c, hx, hy, "A", action) + 22;
-            hx += DrawHint(c, hx, hy, "B", "Menu") + 22;
-            DrawHint(c, hx, hy, "+ -", "Exit");
-        }
-    }
-
-    void DrawArticSetupConfirm(Canvas& c, bool old3ds, bool replacing) {
-        const int w = std::min(760, g_screen_w - 48);
-        constexpr int h = 326;
-        const int x = (g_screen_w - w) / 2;
-        const int y = (g_screen_h - h) / 2;
-        Skin::DrawModal(c, x, y, w, h);
-
-        const std::string title =
-            std::string{replacing ? "Reinstall " : "Set up "} +
-            (old3ds ? "Old 3DS system files?" : "New 3DS system files?");
-        g_font.Draw(c, x + 28, y + 44, title, 24, kColText);
-        g_font.Draw(c, x + 28, y + 82,
-                    "This connects to Azahar Artic Setup Tool and installs system titles", 18,
-                    kColTextDim);
-        g_font.Draw(c, x + 28, y + 108,
-                    "and console specific data from the real 3DS into this EmuSwitch folder.", 18,
-                    kColTextDim);
-        g_font.Draw(c, x + 28, y + 148,
-                    "Do not share the folder after setup. Do not take both systems online", 18,
-                    kColError);
-        g_font.Draw(c, x + 28, y + 174,
-                    "at the same time. The selected set of system titles will be replaced.", 18,
-                    kColError);
-        g_font.Draw(c, x + 28, y + 214,
-                    "Both setup modes work from either Old or New 3DS hardware.", 18, kColTextDim);
-
-        int hx = x + 28;
-        const int hy = y + h - 42;
-        hx += DrawHint(c, hx, hy, "A", replacing ? "Reinstall" : "Continue") + 22;
-        DrawHint(c, hx, hy, "B", "Cancel");
-    }
-
     void DrawSavesPanel(Canvas& c) {
         const GameEntry& game = games[filtered[selected]];
         const int w = std::min(660, ContentW() - 48);
@@ -3252,7 +3123,6 @@ private:
         if (update_installed) return 2;
         if (update_download_active) return 3;
         if (UpdateModalOpen()) return 4;
-        if (install_active) return 5;
         if (confirm) return 6;
         if (remap_open) return 7;
         if (country_picker_open) return 8;
@@ -3279,7 +3149,7 @@ private:
                 title = game.title;
                 sub = std::string{SystemName(game.system)};
             } else {
-                title = system_filter != kNoSystemFilter ? std::string{SystemName(system_filter)} : g_nickname;
+                title = g_nickname;
                 sub = std::to_string(filtered.size()) + (filtered.size() == 1 ? " game" : " games");
             }
             if (!search.empty()) {
@@ -3287,13 +3157,16 @@ private:
             }
             break;
         case Tab::Systems:
-            sub = "Pick a system to see its games";
-            break;
-        case Tab::Install:
-            sub = std::to_string(install_cias.size()) + (install_cias.size() == 1 ? " CIA" : " CIAs");
-            break;
-        case Tab::Artic:
-            sub = "3DS connectivity";
+            if (system_games_open && focus == Focus::Content && !system_games.empty()) {
+                const GameEntry& game =
+                    games[static_cast<std::size_t>(system_games[static_cast<std::size_t>(system_games_sel)])];
+                title = game.title;
+                sub = std::string{SystemName(game.system)};
+            } else if (system_moving) {
+                sub = "Moving " + Art::Systems()[static_cast<std::size_t>(SystemRowAt(systems_sel))].name;
+            } else {
+                sub = "Pick a console to see its games";
+            }
             break;
         default:
             break;
@@ -3346,6 +3219,23 @@ private:
         // Page changes slide the new page in.
         page_anim = std::min(1.0f, page_anim + dt / 0.28f);
 
+        // The install pill: what's installing and how far along it is.
+        {
+            const int index = install_index.load(), count = install_count.load();
+            const bool showing = install_active && index > 0;
+            if (showing) {
+                std::lock_guard lock{install_mutex};
+                install_label = "Installing " + install_name;
+                if (count > 1) {
+                    install_label += "  (" + std::to_string(index) + " of " + std::to_string(count) + ")";
+                }
+                const std::size_t total = install_total.load();
+                install_frac = total == 0 ? 0.0f
+                                          : static_cast<float>(static_cast<double>(install_written.load()) / total);
+            }
+            install_pill = Approach(install_pill, showing ? 1.0f : 0.0f, dt, 0.08f);
+        }
+
         // Modals fade and rise in.
         const int kind = ModalKind();
         if (kind != modal_kind) {
@@ -3357,10 +3247,12 @@ private:
         // The grid: scroll, the gliding cursor and the focused tile popping up.
         if (tab == Tab::Library && !filtered.empty()) {
             const Grid grid = ComputeGrid();
-            grid_scroll.Step(static_cast<float>(scroll_row), dt, 320.0f, 34.0f);
-            const int row = selected / grid.cols, col = selected % grid.cols;
-            const float tx = static_cast<float>(grid.start_x + col * (kTileW + kTileGap));
-            const float ty = grid.top + (row - grid_scroll.x) * (kTileH + kTileGap);
+            if (grid.cols != home_cols) {
+                BuildHomeLayout();
+            }
+            grid_scroll.Step(home_top, dt, 320.0f, 34.0f);
+            float tx, ty;
+            HomeTilePos(grid, selected, grid_scroll.x, tx, ty);
             if (!cursor_ready) {
                 cursor_x.Snap(tx);
                 cursor_y.Snap(ty);
@@ -3378,7 +3270,7 @@ private:
             lift_prev = Approach(lift_prev, 0.0f, dt, 0.05f);
             SetAmbientForGame(games[filtered[static_cast<std::size_t>(selected)]]);
         } else if (tab == Tab::Systems) {
-            Skin::SetAmbient(SystemColor(SystemIndexFor(systems_sel)));
+            Skin::SetAmbient(SystemColor(SystemAt(systems_sel)));
         } else {
             Skin::SetAmbient(MakeColor(60, 90, 160));
         }
@@ -3390,14 +3282,24 @@ private:
         systems_spring.Step(static_cast<float>(systems_sel), dt, 240.0f, 26.0f);
         systems_anim = systems_spring.x;
         {
-            const u32 target = SystemColor(SystemIndexFor(systems_sel));
+            const u32 target = SystemColor(SystemAt(systems_sel));
             for (int i = 0; i < 3; ++i) {
                 systems_accent[i] = Approach(systems_accent[i], float((target >> (i * 8)) & 0xFF), dt, 0.07f);
             }
         }
         const bool systems_page = tab == Tab::Systems && !PerGameOpen();
         const float spot_y = kContentTop + (g_screen_h - kHintH - 44 - kContentTop) / 2.0f + 96.0f;
-        Skin::SetSpot(225.0f, spot_y, 240.0f, SystemColor(SystemIndexFor(systems_sel)), systems_page ? 1.0f : 0.0f);
+        // The pool of light under the controller; the game list has no controller.
+        Skin::SetSpot(225.0f, spot_y, 240.0f, SystemColor(SystemAt(systems_sel)),
+                      systems_page && !system_games_open ? 1.0f : 0.0f);
+
+        // The + menu and the console game list fade in; the list's highlight and scroll glide.
+        system_menu_anim = system_menu_open ? std::min(1.0f, system_menu_anim + dt / 0.16f) : 0.0f;
+        if (system_games_open) {
+            system_games_anim = std::min(1.0f, system_games_anim + dt / 0.24f);
+            system_games_scroll.Step(system_games_top, dt, 320.0f, 34.0f);
+            system_games_cursor.Step(static_cast<float>(system_games_sel), dt, 520.0f, 44.0f);
+        }
 
         Skin::BeginFrame(now, g_screen_w, g_screen_h);
     }
@@ -3414,27 +3316,8 @@ private:
     // Draws `scene` once without pixels (so every cache it needs is built on this thread), then
     // in bands across the cores, each band going straight into the framebuffer.
     void RenderFrame(const std::function<void(Canvas&)>& scene) {
-        {
-            Canvas warm = canvas.View(0, 0);
-            scene(warm);
-        }
-        Skin::EndWarmup();
         EnsureFramebuffer();
-        u32 stride = 0;
-        auto* fb_base = static_cast<u8*>(framebufferBegin(&fb, &stride));
-        const int h = canvas.Height();
-        const int rotation = g_rotation;
-        Workers::Get().Run(kBands, [&](int i) {
-            int y0, y1;
-            BandRows(h, i, y0, y1);
-            if (y0 >= y1) {
-                return;
-            }
-            Canvas band = canvas.View(y0, y1);
-            scene(band);
-            WriteBlockLinear(canvas, y0, y1, rotation, fb_base, stride);
-        });
-        framebufferEnd(&fb);
+        RenderToFramebuffer(canvas, fb, scene);
     }
 
     // One frame of the menu, with `overlay` drawn over it (a blocking prompt, say).
@@ -3488,17 +3371,14 @@ private:
                 DrawLibrary(c);
             } else if (tab == Tab::Systems) {
                 DrawSystemsPage(c);
-            } else if (tab == Tab::Install) {
-                DrawInstallPage(c);
             } else if (tab == Tab::Settings) {
                 DrawSettingsPage(c);
-            } else if (tab == Tab::Paths) {
-                DrawPathsPage(c);
             } else {
-                DrawArticPage(c);
+                DrawPathsPage(c);
             }
         }
         DrawNotice(c);
+        DrawInstallPill(c);
         if (modal_kind == 0) {
             return;
         }
@@ -3526,9 +3406,6 @@ private:
         if (confirm) {
             DrawConfirm(c);
         }
-        if (install_active) {
-            DrawInstallProgress(c);
-        }
         if (UpdateModalOpen()) {
             DrawUpdateCheckProgress(c);
         }
@@ -3543,141 +3420,25 @@ private:
         }
     }
 
-    void DrawInstallPage(Canvas& c) {
-        const bool content_focus = focus == Focus::Content;
-        const int x = kContentX + 24;
-        const int w = ContentW() - 48;
-        g_font.Draw(c, x, kContentTop + 26,
-                    install_dir.empty() ? std::string{"Mounted devices"}
-                                        : g_font.TruncateFront(install_dir, 18, w),
-                    18, kColAccent);
-        c.FillRect(x, kContentTop + kInstallHeaderH, w, 1, kColRail);
-
-        const int count = InstallRowCount();
-        if (count == 0) {
-            g_font.Draw(c, x + 20, kInstallTop + 30, "No CIAs or subfolders here", 20, kColTextDim);
-        }
-        const int base = InstallParentRows();
-        for (int i = install_scroll; i < std::min(count, install_scroll + InstallRows()); ++i) {
-            const int y = kInstallTop + (i - install_scroll) * kInstallRowH;
-            if (i == install_sel) {
-                Skin::DrawRow(c, x, y, w, kInstallRowH - 4, content_focus);
-            }
-            const int text_y = CenterBaseline(y, kInstallRowH - 4, 18);
-            if (base == 1 && i == 0) {
-                g_font.Draw(c, x + 20, text_y, "..", 18, kColTextDim);
-                continue;
-            }
-            const int di = i - base;
-            if (di < static_cast<int>(install_dirs.size())) {
-                g_font.Draw(c, x + 20, text_y,
-                            g_font.Truncate(install_dirs[di].name + "/", 18, w - 44), 18, kColText);
-                continue;
-            }
-            DrawCiaRow(c, install_cias[di - static_cast<int>(install_dirs.size())], x, y, w);
-        }
-        DrawListScrollbar(c, g_screen_w - 10, kInstallTop, InstallRows(), kInstallRowH, count,
-                          install_scroll);
-
-        if (focus == Focus::Rail) {
-            DrawRailHints(c);
+    // A small glass pill under the profile bar while CIAs install in the background.
+    void DrawInstallPill(Canvas& c) {
+        if (install_pill <= 0.01f || install_label.empty()) {
             return;
         }
-        int hx = HintX();
-        const int hy = g_screen_h - 44;
-        hx += DrawHint(c, hx, hy, "A", SelectedCia() ? "Install" : "Open") + 22;
-        hx += DrawHint(c, hx, hy, "B", "Menu") + 22;
-        hx += DrawHint(c, hx, hy, "Y", "Refresh") + 22;
-        DrawHint(c, hx, hy, "+ -", "Exit");
-    }
-
-    // Name on the left, then size, version and a kind badge packed to the right.
-    void DrawCiaRow(Canvas& c, const CiaEntry& cia, int x, int y, int w) {
-        const int text_y = CenterBaseline(y, kInstallRowH - 4, 18);
-        const int badge_y = y + (kInstallRowH - 4 - 20) / 2;
-        const int badge_text_y = CenterBaseline(badge_y, 20, 14);
-        int right = x + w - 20;
-
-        const char* badge = cia.readable ? TitleKindName(cia.kind) : "UNREADABLE";
-        const u32 badge_col = cia.readable ? KindBadgeColor(cia.kind) : kColError;
-        const int bw = g_font.Measure(badge, 14) + 14;
-        right -= bw;
-        c.FillRoundRect(right, badge_y, bw, 20, 7, badge_col);
-        g_font.Draw(c, right + 7, badge_text_y, badge, 14, kColText);
-        right -= 12;
-
-        if (cia.readable) {
-            const std::string version = FormatTitleVersion(cia.version);
-            const int vw = g_font.Measure(version, 16);
-            right -= vw;
-            g_font.Draw(c, right, text_y, version, 16, kColTextDim);
-            right -= 12;
-        }
-
-        const std::string size = FormatSize(cia.size);
-        const int sw = g_font.Measure(size, 16);
-        right -= sw;
-        g_font.Draw(c, right, text_y, size, 16, kColTextDim);
-
-        g_font.Draw(c, x + 20, text_y, g_font.Truncate(cia.name, 18, std::max(60, right - x - 32)),
-                    18, kColText);
-    }
-
-    void DrawConfirmInstall(Canvas& c, const CiaEntry& cia, bool replacing, u16 installed_version) {
-        const int w = std::min(620, g_screen_w - 48);
-        constexpr int h = 268;
-        const int x = (g_screen_w - w) / 2;
-        const int y = (g_screen_h - h) / 2;
-        Skin::DrawModal(c, x, y, w, h);
-
-        int ty = y + 20;
-        g_font.Draw(c, x + 24, ty + 22, "Install this title?", 24, kColText);
-        ty += 36;
-        g_font.Draw(c, x + 24, ty + 18, g_font.Truncate(cia.name, 18, w - 48), 18, kColTextDim);
-        ty += 32;
-        c.FillRect(x + 24, ty, w - 48, 1, kColRail);
-        ty += 10;
-
-        const auto row = [&](const char* label, const std::string& value, u32 color) {
-            g_font.Draw(c, x + 24, ty + 18, label, 18, kColTextDim);
-            g_font.Draw(c, x + 190, ty + 18, g_font.Truncate(value, 18, w - 214), 18, color);
-            ty += 28;
-        };
-        row("Type", TitleKindName(cia.kind), kColText);
-        row("Title ID", FormatTitleId(cia.program_id), kColText);
-        row("Version", FormatTitleVersion(cia.version), kColText);
-        if (replacing) {
-            row("Replaces", FormatTitleVersion(installed_version), kColError);
-        }
-
-        int hx = x + 24;
-        const int hy = y + h - 38;
-        hx += DrawHint(c, hx, hy, "A", "Install") + 22;
-        DrawHint(c, hx, hy, "B", "Cancel");
-    }
-
-    void DrawInstallProgress(Canvas& c) {
-        const std::size_t written = install_written.load();
-        const std::size_t total = install_total.load();
-        const int w = std::min(560, g_screen_w - 48);
-        constexpr int h = 136;
-        const int x = (g_screen_w - w) / 2;
-        const int y = (g_screen_h - h) / 2;
-        Skin::DrawModal(c, x, y, w, h);
-        g_font.Draw(c, x + 24, y + 42, g_font.Truncate("Installing " + install_name, 20, w - 48),
-                    20, kColText);
-
-        const int bar_x = x + 24;
-        const int bar_y = y + 64;
-        const int bar_w = w - 48;
-        Skin::DrawProgress(c, bar_x, bar_y, bar_w, 10,
-                           total == 0 ? 0.0f : static_cast<float>(static_cast<double>(written) / total),
-                           AnimTime());
-
-        g_font.Draw(c, bar_x, bar_y + 36, FormatSize(written) + " / " + FormatSize(total), 18,
-                    kColTextDim);
-        const char* warn = "Don't close EmuSwitch or turn off the console";
-        g_font.Draw(c, x + w - 24 - g_font.Measure(warn, 18), bar_y + 36, warn, 18, kColTextDim);
+        const float e = EaseOut(install_pill);
+        Canvas::FadeScope fade{c, e};
+        Canvas::OffsetScope drop{c, 0, static_cast<int>(std::lround(-10.0f * (1.0f - e)))};
+        const std::string text = g_font_bold.Truncate(install_label, 17, 520);
+        const int tw = g_font_bold.Measure(text, 17);
+        const int w = tw + 118, h = 44;
+        // In the middle of the profile bar, between the name and the clock.
+        const int x = (g_screen_w - w) / 2, y = (kHeaderH - h) / 2 + 2;
+        Skin::DrawPanel(c, x, y, w, h, h / 2);
+        Skin::DrawSpinner(c, x + 26.0f, y + h / 2.0f, 8.0f, AnimTime());
+        g_font_bold.Draw(c, x + 46, CenterBaseline(y, h - 6, 17), text, 17, kColText);
+        const std::string pct = std::to_string(static_cast<int>(install_frac * 100.0f + 0.5f)) + "%";
+        g_font.Draw(c, x + w - 20 - g_font.Measure(pct, 15), CenterBaseline(y, h - 6, 15), pct, 15, kColTextDim);
+        Skin::DrawProgress(c, x + 46, y + h - 12, w - 66, 4, install_frac, AnimTime());
     }
 
     void DrawUpdateCheckProgress(Canvas& c) {
@@ -3788,47 +3549,62 @@ private:
             const int step = kTileH + kTileGap;
             const float scroll = grid_scroll.x;
             const int count = static_cast<int>(filtered.size());
-            // Empty slots fill out the last screen, like a console home menu.
-            const int total_rows = std::max(grid.visible_rows, (count + grid.cols - 1) / grid.cols);
-            const int first_row = std::max(0, static_cast<int>(std::floor(scroll)) - 1);
-            const int last_row = std::min(total_rows - 1, static_cast<int>(std::ceil(scroll)) + grid.visible_rows);
-            const float view_top = static_cast<float>(grid.top);
-            const float view_bottom = static_cast<float>(grid.top + grid.visible_rows * step - kTileGap);
+            const int used_w = grid.cols * kTileW + (grid.cols - 1) * kTileGap;
+            const float view_top = static_cast<float>(HomeViewTop());
+            const float view_bottom = static_cast<float>(HomeViewBottom());
             const float intro = static_cast<float>(g_now - library_intro);
             // Tiles slide under the profile bar and above the dock, fading as they leave.
             Canvas::ClipScope clip{c, 0, kContentTop - 20, g_screen_w, ContentBottom() - 16 - (kContentTop - 20)};
-            auto look_for = [&](int i, int& x, int& y) {
-                const int row = i / grid.cols, col = i % grid.cols;
-                const float fy = grid.top + (row - scroll) * step;
-                x = grid.start_x + col * (kTileW + kTileGap);
-                y = static_cast<int>(std::lround(fy));
+            const auto edge_fade = [&](float fy, float h) {
                 float out = 0.0f;
                 if (fy < view_top - 4) {
                     out = (view_top - fy) / (step * 0.75f);
-                } else if (fy + kTileH > view_bottom + 4) {
-                    out = (fy + kTileH - view_bottom) / (step * 0.75f);
+                } else if (fy + h > view_bottom + 4) {
+                    out = (fy + h - view_bottom) / (step * 0.75f);
                 }
-                // On arrival the tiles rise in, a column and a row at a time.
-                const float wave = intro * 3.4f - (col * 0.055f + (row - std::floor(scroll)) * 0.13f);
+                return std::clamp(1.0f - out, 0.0f, 1.0f);
+            };
+            // On arrival everything rises in, a column and a row at a time.
+            const auto wave_at = [&](float fy, int col) {
+                return EaseOut(intro * 3.4f - (col * 0.055f + ((fy - view_top) / step) * 0.13f));
+            };
+            const auto look_for = [&](int i, int& x, int& y) {
+                float fx, fy;
+                HomeTilePos(grid, i, scroll, fx, fy);
+                x = static_cast<int>(fx);
+                y = static_cast<int>(std::lround(fy));
+                const int col = (x - grid.start_x) / (kTileW + kTileGap);
                 Skin::TileLook look;
-                look.appear = std::clamp(1.0f - out, 0.0f, 1.0f) * EaseOut(wave);
+                look.appear = edge_fade(fy, kTileH) * wave_at(fy, col);
                 look.t = AnimTime();
                 look.dim = !content_focus;
                 return look;
             };
-            for (int row = first_row; row <= last_row; ++row) {
-                for (int col = 0; col < grid.cols; ++col) {
-                    const int i = row * grid.cols + col;
+            // Each console's header: its logo, name and how many games it has.
+            for (const HomeSection& section : home_sections) {
+                const float fy = view_top + section.y - scroll;
+                if (fy > view_bottom + 40.0f || fy + Skin::kSectionHeaderH < view_top - 60.0f) {
+                    continue;
+                }
+                const std::string games_text =
+                    std::to_string(section.count) + (section.count == 1 ? " game" : " games");
+                Skin::DrawSectionHeader(c, SkinFonts(), CardFor(section.system + 1), SystemName(section.system),
+                                        games_text, grid.start_x, static_cast<int>(std::lround(fy)), used_w,
+                                        edge_fade(fy, 40.0f) * wave_at(fy, 0));
+            }
+            for (const HomeRow& row : home_rows) {
+                const float fy = view_top + row.y - scroll;
+                if (fy > view_bottom + step || fy + kTileH < view_top - step) {
+                    continue;
+                }
+                for (int k = 0; k < row.count; ++k) {
+                    const int i = row.first + k;
                     if (i == selected || i == lift_prev_index) {
                         continue;
                     }
                     int x, y;
                     const Skin::TileLook look = look_for(i, x, y);
-                    if (i < count) {
-                        DrawTile(c, games[filtered[static_cast<std::size_t>(i)]], x, y, look);
-                    } else {
-                        Skin::DrawEmptySlot(c, x, y, look.appear);
-                    }
+                    DrawTile(c, games[filtered[static_cast<std::size_t>(i)]], x, y, look);
                 }
             }
             // The tile the cursor left settles back; the focused one pops up over everything.
@@ -3865,24 +3641,105 @@ private:
                 hx += DrawHint(c, hx, hy, "L", "Picture") + 22;
             }
             hx += DrawHint(c, hx, hy, "+", "Details") + 22;
-            if (system_filter != kNoSystemFilter) {
-                hx += DrawHint(c, hx, hy, "B", "All games") + 22;
-            }
             DrawHint(c, hx, hy, "+ -", "Exit");
         }
     }
 
-    // ---- Systems: a carousel; A shows that system's games, Y sets its picture ----------------
+    // ---- Systems: the consoles in a carousel; A lists a console's games, + moves it -------------
 
-    static constexpr int kNoSystemFilter = -99;
-    int system_filter = kNoSystemFilter;
-    int systems_sel = 0;
+    int systems_sel = 0; // position in system_order
     float systems_anim = 0.0f;
     std::string picture_dir = "sdmc:/";
+    // The consoles in the player's order: carousel positions -> rows of Art::Systems() (which
+    // lists "3ds" first, then Multi::Systems() in order). Home's sections follow it too.
+    std::vector<int> system_order;
+    // The + menu (it only offers Move Placement) and carrying a console to a new place.
+    bool system_menu_open = false;
+    float system_menu_anim = 0.0f;
+    bool system_moving = false;
+    std::vector<int> system_order_before;
+    int systems_sel_before = 0;
+    // A console's games, listed when A is pressed on its card.
+    bool system_games_open = false;
+    std::vector<int> system_games; // indices into `games`
+    int system_games_sel = 0;
+    float system_games_top = 0.0f; // where the list is scrolled to, in pixels
+    Spring system_games_scroll;
+    Spring system_games_cursor; // the highlight glides between rows
+    float system_games_anim = 0.0f;
 
-    // Art::Systems() lists "3ds" first, then Multi systems in order.
+    static constexpr int kGameRowH = 92;
+    static constexpr int kGameRowStep = kGameRowH + 10;
+    static constexpr int kGameListX = 440;
+
+    // Art::Systems() row -> Multi::Systems() index (-1 for the 3DS).
     static int SystemIndexFor(int row) {
         return row == 0 ? -1 : row - 1;
+    }
+    // The Art::Systems() row at a carousel position.
+    int SystemRowAt(int pos) const {
+        return pos >= 0 && pos < static_cast<int>(system_order.size()) ? system_order[pos] : 0;
+    }
+    int SystemAt(int pos) const {
+        return SystemIndexFor(SystemRowAt(pos));
+    }
+    // Where a console (a Multi::Systems() index, -1 for the 3DS) sits in the player's order.
+    int SystemRank(int system) const {
+        const int row = system + 1;
+        for (std::size_t i = 0; i < system_order.size(); ++i) {
+            if (system_order[i] == row) {
+                return static_cast<int>(i);
+            }
+        }
+        return static_cast<int>(system_order.size());
+    }
+    Skin::SystemCard CardFor(int row) const {
+        const auto& systems = Art::Systems();
+        return {systems[static_cast<std::size_t>(row)].id, SystemBadge(SystemIndexFor(row)),
+                SystemColor(SystemIndexFor(row))};
+    }
+
+    void LoadSystemOrder() {
+        const auto& systems = Art::Systems();
+        system_order.clear();
+        std::vector<bool> used(systems.size(), false);
+        const std::string ids = GetSystemsOrder();
+        std::size_t start = 0;
+        while (start < ids.size()) {
+            std::size_t comma = ids.find(',', start);
+            if (comma == std::string::npos) {
+                comma = ids.size();
+            }
+            const std::string id = ids.substr(start, comma - start);
+            for (std::size_t i = 0; i < systems.size(); ++i) {
+                if (!used[i] && systems[i].id == id) {
+                    used[i] = true;
+                    system_order.push_back(static_cast<int>(i));
+                    break;
+                }
+            }
+            start = comma + 1;
+        }
+        // Consoles the saved order doesn't mention go at the end, in the usual order.
+        for (std::size_t i = 0; i < systems.size(); ++i) {
+            if (!used[i]) {
+                system_order.push_back(static_cast<int>(i));
+            }
+        }
+        systems_sel = std::clamp(systems_sel, 0, static_cast<int>(system_order.size()) - 1);
+    }
+
+    void SaveSystemOrder() {
+        const auto& systems = Art::Systems();
+        std::string ids;
+        for (const int row : system_order) {
+            if (!ids.empty()) {
+                ids += ',';
+            }
+            ids += systems[static_cast<std::size_t>(row)].id;
+        }
+        SetSystemsOrder(ids);
+        SaveConfig();
     }
 
     void PickGamePicture(const GameEntry& game) {
@@ -3897,84 +3754,225 @@ private:
         ShowNotice(err.empty() ? "Picture set for " + game.title : "Couldn't use that picture: " + err, !err.empty());
     }
 
-    // Shows the focused system's games in the library.
+    // Lists the focused console's games on the Systems page.
     void OpenSystemGames() {
-        system_filter = SystemIndexFor(systems_sel);
-        search.clear();
-        ApplyFilter();
-        SetTab(Tab::Library);
-        rail_sel = tab;
-        focus = Focus::Content;
+        const int sys = SystemAt(systems_sel);
+        system_games.clear();
+        for (int i = 0; i < static_cast<int>(games.size()); ++i) {
+            if (games[static_cast<std::size_t>(i)].system == sys) {
+                system_games.push_back(i);
+            }
+        }
+        system_games_sel = 0;
+        system_games_top = 0.0f;
+        system_games_scroll.Snap(0.0f);
+        system_games_cursor.Snap(0.0f);
+        system_games_anim = 0.0f;
+        system_games_open = true;
     }
 
     void PickSystemPicture() {
         const auto& systems = Art::Systems();
-        const std::string& id = systems[systems_sel].id;
-        const std::string title = "Picture for " + systems[systems_sel].name;
+        const auto& sys = systems[static_cast<std::size_t>(SystemRowAt(systems_sel))];
+        const std::string title = "Picture for " + sys.name;
         const std::optional<std::string> picked = BrowseForImage(title.c_str(), picture_dir);
         if (!picked) {
             return;
         }
         picture_dir = ParentDirectory(*picked);
         ShowBusy("Loading picture...");
-        const std::string err = Art::SetSystemArt(id, *picked);
-        ShowNotice(err.empty() ? systems[systems_sel].name + " picture set" : "Couldn't use that picture: " + err,
-                   !err.empty());
+        const std::string err = Art::SetSystemArt(sys.id, *picked);
+        ShowNotice(err.empty() ? sys.name + " picture set" : "Couldn't use that picture: " + err, !err.empty());
     }
 
-    void HandleSystems(u64 down, u32 nav) {
-        const auto& systems = Art::Systems();
-        const int count = static_cast<int>(systems.size());
+    // Picks the focused console up so the arrows move it along the carousel.
+    void BeginSystemMove() {
+        system_order_before = system_order;
+        systems_sel_before = systems_sel;
+        system_moving = true;
+    }
+
+    void MoveSystem(int dir) {
+        const int next = systems_sel + dir;
+        if (next < 0 || next >= static_cast<int>(system_order.size())) {
+            return;
+        }
+        std::swap(system_order[static_cast<std::size_t>(systems_sel)], system_order[static_cast<std::size_t>(next)]);
+        systems_sel = next;
+        // The carried console stays under the cursor; its neighbours trade places around it.
+        systems_spring.Snap(static_cast<float>(systems_sel));
+    }
+
+    void FinishSystemMove() {
+        system_moving = false;
+        if (system_order == system_order_before) {
+            return;
+        }
+        SaveSystemOrder();
+        ApplyFilter(); // Home's sections follow the new order
+        ShowNotice(Art::Systems()[static_cast<std::size_t>(SystemRowAt(systems_sel))].name + " moved", false);
+    }
+
+    void CancelSystemMove() {
+        system_order = system_order_before;
+        systems_sel = systems_sel_before;
+        systems_spring.Snap(static_cast<float>(systems_sel));
+        system_moving = false;
+    }
+
+    int GameListTop() const {
+        return kContentTop + 14;
+    }
+    int GameListBottom() const {
+        return ContentBottom() - 36;
+    }
+    int GameListVisibleRows() const {
+        return std::max(1, (GameListBottom() - GameListTop() + 10) / kGameRowStep);
+    }
+
+    void EnsureGameListVisible() {
+        const float view_h = static_cast<float>(GameListBottom() - GameListTop());
+        const float top = static_cast<float>(system_games_sel * kGameRowStep);
+        const float bottom = top + kGameRowH;
+        if (top < system_games_top) {
+            system_games_top = top;
+        } else if (bottom > system_games_top + view_h) {
+            system_games_top = bottom - view_h;
+        }
+        const float max_top = std::max(0.0f, static_cast<float>(system_games.size()) * kGameRowStep - 10 - view_h);
+        system_games_top = std::clamp(system_games_top, 0.0f, max_top);
+    }
+
+    bool HandleSystemGames(u64 down, u32 nav, MenuResult& result) {
+        const int count = static_cast<int>(system_games.size());
+        if (count > 0) {
+            const int page = GameListVisibleRows();
+            if (nav & DirUp) {
+                system_games_sel = std::max(0, system_games_sel - 1);
+            }
+            if (nav & DirDown) {
+                system_games_sel = std::min(count - 1, system_games_sel + 1);
+            }
+            if (nav & DirLeft) {
+                system_games_sel = std::max(0, system_games_sel - page);
+            }
+            if (nav & DirRight) {
+                system_games_sel = std::min(count - 1, system_games_sel + page);
+            }
+            if (down & HidNpadButton_A) {
+                result = {MenuAction::Launch, games[static_cast<std::size_t>(system_games[system_games_sel])].path};
+                return true;
+            }
+        }
+        if (down & HidNpadButton_B) {
+            system_games_open = false;
+        }
+        EnsureGameListVisible();
+        return false;
+    }
+
+    bool HandleSystems(u64 down, u32 nav, MenuResult& result) {
+        if (system_games_open) {
+            return HandleSystemGames(down, nav, result);
+        }
+        if (system_menu_open) {
+            if (down & HidNpadButton_A) {
+                system_menu_open = false;
+                BeginSystemMove();
+            } else if (down & (HidNpadButton_B | HidNpadButton_Plus)) {
+                system_menu_open = false;
+            }
+            return false;
+        }
+        const int count = static_cast<int>(system_order.size());
+        if (system_moving) {
+            if (nav & (DirUp | DirLeft)) {
+                MoveSystem(-1);
+            }
+            if (nav & (DirDown | DirRight)) {
+                MoveSystem(+1);
+            }
+            if (down & (HidNpadButton_A | HidNpadButton_Plus)) {
+                FinishSystemMove();
+            } else if (down & HidNpadButton_B) {
+                CancelSystemMove();
+            }
+            return false;
+        }
         if (nav & (DirUp | DirLeft)) {
             systems_sel = std::max(0, systems_sel - 1);
         }
         if (nav & (DirDown | DirRight)) {
             systems_sel = std::min(count - 1, systems_sel + 1);
         }
-        const std::string& id = systems[systems_sel].id;
+        const auto& sys = Art::Systems()[static_cast<std::size_t>(SystemRowAt(systems_sel))];
         if (down & HidNpadButton_A) {
             OpenSystemGames();
-            return;
+            return false;
+        }
+        // Guarded so that reaching for the +/- exit combo doesn't flash the menu open.
+        if ((down & HidNpadButton_Plus) && !(held & HidNpadButton_Minus)) {
+            system_menu_open = true;
+            system_menu_anim = 0.0f;
+            return false;
         }
         if ((down & HidNpadButton_Y) && IsPictureEditingEnabled()) {
             PickSystemPicture();
         }
-        if ((down & HidNpadButton_X) && IsPictureEditingEnabled() && Skin::HasSystemImage(id)) {
-            const std::string err = Art::SetSystemArt(id, "");
-            ShowNotice(err.empty() ? systems[systems_sel].name + " back to its default look" : err, !err.empty());
+        if ((down & HidNpadButton_X) && IsPictureEditingEnabled() && Skin::HasSystemImage(sys.id)) {
+            const std::string err = Art::SetSystemArt(sys.id, "");
+            ShowNotice(err.empty() ? sys.name + " back to its default look" : err, !err.empty());
         }
         if (down & HidNpadButton_B) {
             EnterRail();
         }
+        return false;
     }
 
     void DrawSystemsPage(Canvas& c) {
+        if (system_games_open) {
+            // The list rises in as it opens.
+            const float e = EaseOut(system_games_anim);
+            Canvas::FadeScope fade{c, e};
+            Canvas::OffsetScope rise{c, 0, static_cast<int>(std::lround(24.0f * (1.0f - e)))};
+            DrawSystemGames(c);
+            return;
+        }
         const auto& systems = Art::Systems();
         std::vector<Skin::SystemCard> cards;
-        for (int i = 0; i < static_cast<int>(systems.size()); ++i) {
-            cards.push_back({systems[i].id, SystemBadge(SystemIndexFor(i)), SystemColor(SystemIndexFor(i))});
+        for (const int row : system_order) {
+            cards.push_back(CardFor(row));
         }
-        const int sys = SystemIndexFor(systems_sel);
+        const int row = SystemRowAt(systems_sel);
+        const int sys = SystemIndexFor(row);
         int count = 0;
         for (const GameEntry& g : games) {
             count += g.system == sys ? 1 : 0;
         }
         const std::string detail = count == 0 ? "No games yet" : std::to_string(count) + (count == 1 ? " game" : " games");
-        const bool custom = Skin::HasSystemImage(systems[systems_sel].id);
+        const bool custom = Skin::HasSystemImage(systems[static_cast<std::size_t>(row)].id);
         Skin::CarouselText text;
-        text.name = systems[systems_sel].name;
+        text.name = systems[static_cast<std::size_t>(row)].name;
         text.detail = detail;
-        text.status = custom ? "Showing your picture" : "Default look";
-        text.status_ok = true;
+        text.status = system_moving ? "Moving: use the arrows, then A" : custom ? "Showing your picture" : "Default look";
+        text.status_ok = !system_moving;
         text.has_picture = custom;
         text.picture_button = IsPictureEditingEnabled();
+        text.moving = system_moving;
         Skin::DrawSystemsCarousel(c, SkinFonts(), cards, systems_anim, systems_sel, text, SystemsAccent(), AnimTime());
         if (focus == Focus::Rail) {
             DrawRailHints(c);
+        } else if (system_moving) {
+            int hx = HintX();
+            const int hy = g_screen_h - 44;
+            hx += DrawHint(c, hx, hy, "Up Down", "Move") + 22;
+            hx += DrawHint(c, hx, hy, "A", "Done") + 22;
+            DrawHint(c, hx, hy, "B", "Cancel");
         } else {
             int hx = HintX();
             const int hy = g_screen_h - 44;
             hx += DrawHint(c, hx, hy, "A", "Games") + 22;
+            hx += DrawHint(c, hx, hy, "+", "Menu") + 22;
             if (IsPictureEditingEnabled()) {
                 hx += DrawHint(c, hx, hy, "Y", "Picture") + 22;
                 if (custom) {
@@ -3983,18 +3981,128 @@ private:
             }
             DrawHint(c, hx, hy, "B", "Back");
         }
+        if (system_menu_open) {
+            DrawSystemMenu(c);
+        }
     }
 
-    void DrawScrollbar(Canvas& c, const Grid& grid) {
-        const int total_rows = (static_cast<int>(filtered.size()) + grid.cols - 1) / grid.cols;
-        if (total_rows <= grid.visible_rows) {
+    // The + menu over the carousel: one entry, Move Placement.
+    Rect SystemMenuRect() const {
+        const int w = 380, h = 150;
+        return {(g_screen_w - w) / 2, (g_screen_h - h) / 2 - 20, w, h};
+    }
+    Rect SystemMenuRowRect() const {
+        const Rect p = SystemMenuRect();
+        return {p.x + 16, p.y + 44, p.w - 32, 52};
+    }
+
+    void DrawSystemMenu(Canvas& c) {
+        const float e = EaseOut(system_menu_anim);
+        Skin::DrawScrim(c, 0.7f * e);
+        Canvas::FadeScope fade{c, e};
+        Canvas::OffsetScope rise{c, 0, static_cast<int>(std::lround(12.0f * (1.0f - e)))};
+        const Rect p = SystemMenuRect();
+        Skin::DrawPanel(c, p.x, p.y, p.w, p.h, 22);
+        const std::string& name = Art::Systems()[static_cast<std::size_t>(SystemRowAt(systems_sel))].name;
+        g_font.Draw(c, p.x + 24, p.y + 30, g_font.Truncate(name, 16, p.w - 48), 16, kColTextDim);
+        const Rect r = SystemMenuRowRect();
+        Skin::DrawRow(c, r.x, r.y, r.w, r.h, true);
+        g_font_bold.Draw(c, r.x + 24, CenterBaseline(r.y, r.h, 21), "Move Placement", 21, kColText);
+        int hx = p.x + 24;
+        const int hy = p.y + p.h - 34;
+        hx += DrawHint(c, hx, hy, "A", "Select") + 22;
+        DrawHint(c, hx, hy, "B", "Close");
+    }
+
+    // A console's games: its card and name on the left, the games in a column on the right.
+    void DrawSystemGames(Canvas& c) {
+        const int row = SystemRowAt(systems_sel);
+        const Skin::SystemCard card = CardFor(row);
+        const std::string& name = Art::Systems()[static_cast<std::size_t>(row)].name;
+        const int count = static_cast<int>(system_games.size());
+
+        constexpr int kCardS = 220;
+        const int card_x = (kGameListX - kCardS) / 2 - 10;
+        const int card_y = kContentTop + 40;
+        Skin::DrawSystemCard(c, SkinFonts(), card, card_x, card_y, kCardS);
+        const std::string title = g_font_bold.Truncate(name, 28, kGameListX - 60);
+        g_font_bold.Draw(c, card_x + (kCardS - g_font_bold.Measure(title, 28)) / 2, card_y + kCardS + 50, title, 28,
+                         kColText);
+        const std::string games_text = count == 0 ? "No games yet" : std::to_string(count) + (count == 1 ? " game" : " games");
+        g_font.Draw(c, card_x + (kCardS - g_font.Measure(games_text, 18)) / 2, card_y + kCardS + 80, games_text, 18,
+                    kColTextDim);
+
+        const int list_w = g_screen_w - kGameListX - 56;
+        if (count == 0) {
+            const std::string where = "Put them in sdmc:/roms/" + std::string{card.id} + "/";
+            const int mid = GameListTop() + (GameListBottom() - GameListTop()) / 2;
+            const char* none = "No games here yet";
+            g_font_bold.Draw(c, kGameListX + (list_w - g_font_bold.Measure(none, 24)) / 2, mid - 8, none, 24, kColText);
+            g_font.Draw(c, kGameListX + (list_w - g_font.Measure(where, 18)) / 2, mid + 24, where, 18, kColTextDim);
+        } else {
+            const float scroll = system_games_scroll.x;
+            const int top = GameListTop();
+            Canvas::ClipScope clip{c, kGameListX - 30, top - 26, list_w + 60, GameListBottom() - top + 52};
+            const int first = std::max(0, static_cast<int>(std::floor(scroll / kGameRowStep)) - 1);
+            const int last = std::min(count - 1, first + GameListVisibleRows() + 2);
+            for (int i = first; i <= last; ++i) {
+                const GameEntry& game = games[static_cast<std::size_t>(system_games[static_cast<std::size_t>(i)])];
+                const int y = top + static_cast<int>(std::lround(i * kGameRowStep - scroll));
+                const float focus_k = std::clamp(1.0f - std::fabs(system_games_cursor.x - i), 0.0f, 1.0f);
+                std::string detail = game.publisher.empty() ? std::string{SystemName(game.system)} : game.publisher;
+                if (game.installed) {
+                    detail += "  -  Installed";
+                }
+                if (game.encrypted) {
+                    detail += "  -  Needs keys";
+                }
+                // Rows fade as they slide under the edges of the list.
+                float out = 0.0f;
+                if (y < top) {
+                    out = static_cast<float>(top - y) / kGameRowStep;
+                } else if (y + kGameRowH > GameListBottom()) {
+                    out = static_cast<float>(y + kGameRowH - GameListBottom()) / kGameRowStep;
+                }
+                Canvas::FadeScope fade{c, std::clamp(1.0f - out, 0.0f, 1.0f)};
+                Skin::DrawGameRow(c, SkinFonts(), TileFor(game), detail, kGameListX, y, list_w, kGameRowH,
+                                  content_focus_for_list() ? focus_k : 0.0f);
+            }
+            if (count > GameListVisibleRows()) {
+                const int track_h = GameListBottom() - top;
+                const float total = static_cast<float>(count * kGameRowStep - 10);
+                const int thumb_h = std::max(28, static_cast<int>(track_h * track_h / total));
+                const float max_scroll = std::max(1.0f, total - track_h);
+                const int thumb_y = top + static_cast<int>((track_h - thumb_h) * std::clamp(scroll / max_scroll, 0.0f, 1.0f));
+                Skin::DrawScrollbar(c, g_screen_w - 26, top, track_h, thumb_y, thumb_h);
+            }
+        }
+        if (focus == Focus::Rail) {
+            DrawRailHints(c);
+        } else {
+            int hx = HintX();
+            const int hy = g_screen_h - 44;
+            if (count > 0) {
+                hx += DrawHint(c, hx, hy, "A", "Play") + 22;
+            }
+            DrawHint(c, hx, hy, "B", "Consoles");
+        }
+    }
+
+    bool content_focus_for_list() const {
+        return focus == Focus::Content;
+    }
+
+    void DrawScrollbar(Canvas& c, const Grid&) {
+        const float view_h = HomeViewH();
+        if (home_height + 14.0f <= view_h) {
             return;
         }
-        const int track_h = grid.visible_rows * (kTileH + kTileGap) - kTileGap;
-        const int thumb_h = std::max(24, track_h * grid.visible_rows / total_rows);
-        const int max_scroll = total_rows - grid.visible_rows;
-        const int thumb_y = grid.top + static_cast<int>((track_h - thumb_h) * std::clamp(grid_scroll.x, 0.0f, float(max_scroll)) / std::max(1, max_scroll));
-        Skin::DrawScrollbar(c, g_screen_w - 12, grid.top, track_h, thumb_y, thumb_h);
+        const int top = HomeViewTop();
+        const int track_h = static_cast<int>(view_h);
+        const int thumb_h = std::max(24, static_cast<int>(track_h * view_h / (home_height + 14.0f)));
+        const float max_scroll = home_height + 14.0f - view_h;
+        const int thumb_y = top + static_cast<int>((track_h - thumb_h) * std::clamp(grid_scroll.x / max_scroll, 0.0f, 1.0f));
+        Skin::DrawScrollbar(c, g_screen_w - 12, top, track_h, thumb_y, thumb_h);
     }
 
     static constexpr int kRowH = 41;
@@ -4369,6 +4477,13 @@ private:
         if (fb_ready) {
             return;
         }
+        if (g_splash_fb_ready) {
+            // The loading screen's buffers carry straight on, so nothing flashes in between.
+            fb = g_splash_fb;
+            g_splash_fb_ready = false;
+            fb_ready = true;
+            return;
+        }
         // Three buffers so a slow frame never stalls on the display; drawn straight into
         // their block-linear layout by RenderFrame().
         framebufferCreate(&fb, nwindowGetDefault(), kPanelW, kPanelH, PIXEL_FORMAT_RGBA_8888, 3);
@@ -4396,13 +4511,28 @@ private:
 
     void DrawLoading() {
         PrepareFrame();
-        RenderFrame([&](Canvas& c) {
-            Skin::DrawBackdrop(c);
-            const char* msg = "Loading library...";
-            const int w = g_font.Measure(msg, 24);
-            Skin::DrawSpinner(c, g_screen_w / 2.0f, g_screen_h / 2.0f - 50.0f, 16.0f, AnimTime());
-            g_font.Draw(c, kContentX + (ContentW() - w) / 2, g_screen_h / 2, msg, 24, kColTextDim);
+        RenderFrame([&](Canvas& c) { DrawStartupScene(c, "Finding your games..."); });
+    }
+
+    // Reads the library on a worker while the loading screen keeps moving.
+    void LoadLibrary() {
+        std::vector<GameEntry> scanned;
+        std::atomic<bool> finished{false};
+        std::thread worker([&scanned, &finished] {
+            scanned = ScanGames();
+            finished = true;
         });
+        while (!finished.load() && appletMainLoop()) {
+            DrawLoading();
+            // Leave the scan most of the CPU; the spinner doesn't need every frame.
+            svcSleepThread(10'000'000);
+        }
+        worker.join();
+        games = std::move(scanned);
+        Art::LoadGameArt(games);
+        paths = GetPaths();
+        RefreshRomsDir2Presence();
+        ApplyFilter();
     }
 
     Canvas canvas;
@@ -4414,26 +4544,22 @@ private:
 } // namespace
 
 MenuResult RunMenu(PadState& pad) {
-    // Inter from the romfs, with the console's fonts behind it for anything it lacks.
-    g_font_bold.Init("romfs:/fonts/Inter-Bold.ttf");
-    g_font_mark.Init("romfs:/fonts/Inter-BlackItalic.ttf");
-    if (!g_font.Init("romfs:/fonts/Inter-Medium.ttf")) {
+    if (!EnsureMenuGraphics()) {
         // Exit on no font found.
         return {MenuAction::Exit, {}};
     }
     // The last game may have written to the CFG savegame the System page reads.
     RefreshSystemSettings();
-    // The menu draws on the CPU: raise its clock for as long as the menu is up, and let the
-    // drawing workers take cores 1 and 2 (this thread keeps core 0).
+    // The menu draws on the CPU: raise its clock for as long as the menu is up.
     const Common::Horizon::CpuBoostScope boost;
-    Workers::SetStartHook([](int index) { Common::Horizon::PinCurrentThread(static_cast<std::uint32_t>(1 + index)); });
-    static bool art_loaded = false;
-    if (!art_loaded) {
+    static bool profile_loaded = false;
+    if (!profile_loaded) {
         psmInitialize();
         g_nickname = Art::LoadProfile();
-        Art::LoadSystemArt();
-        art_loaded = true;
+        profile_loaded = true;
     }
+    // Decoded in the background; only pictures that changed are read again.
+    Art::LoadSystemArt();
     MenuResult result;
     {
         Menu menu;
@@ -4442,6 +4568,34 @@ MenuResult RunMenu(PadState& pad) {
     // Whatever is still loading can wait: the game gets the cores.
     Art::StopLoading();
     return result;
+}
+
+void ShowStartupScreen(std::string_view status) {
+    if (!EnsureMenuGraphics()) {
+        return;
+    }
+    if (!g_splash_fb_ready) {
+        framebufferCreate(&g_splash_fb, nwindowGetDefault(), kPanelW, kPanelH, PIXEL_FORMAT_RGBA_8888, 3);
+        g_splash_fb_ready = true;
+    }
+    g_rotation = GetMenuRotation();
+    g_screen_w = RotatedUpright() ? kPanelH : kPanelW;
+    g_screen_h = RotatedUpright() ? kPanelW : kPanelH;
+    static Canvas canvas;
+    if (canvas.Width() != g_screen_w || canvas.Height() != g_screen_h) {
+        canvas.Resize(g_screen_w, g_screen_h);
+    }
+    g_now = NowSeconds();
+    Skin::BeginFrame(g_now, g_screen_w, g_screen_h);
+    const std::string text{status};
+    RenderToFramebuffer(canvas, g_splash_fb, [&](Canvas& c) { DrawStartupScene(c, text); });
+}
+
+void EndStartupScreen() {
+    if (g_splash_fb_ready) {
+        framebufferClose(&g_splash_fb);
+        g_splash_fb_ready = false;
+    }
 }
 
 void SetMenuNotice(const std::string& text, bool error) {

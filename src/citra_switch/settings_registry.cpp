@@ -1063,11 +1063,15 @@ void BuildLayout(std::vector<SettingEntry>& out) {
                     "Turns the d-pad with the menu, for holding the console sideways.",
                     EntryFlag::None, QuickSection::Display},
                    IsMenuInputRotated, SetMenuInputRotated, false);
-    t << LocalBool("picture_buttons",
-                   {"Picture Buttons",
-                    "Shows the buttons that change system and game pictures. Off hides them."},
-                   IsPictureEditingEnabled, SetPictureEditingEnabled, true);
     t << LayoutCycleEntry();
+
+    // Last on the page, where it's easy to find.
+    t.Group("Pictures");
+    t << LocalBool("picture_buttons",
+                   {"Picture Options",
+                    "Shows the options for adding and changing the pictures of consoles and games. "
+                    "Off hides them."},
+                   IsPictureEditingEnabled, SetPictureEditingEnabled, true);
 }
 
 void BuildControls(std::vector<SettingEntry>& out) {
@@ -1077,9 +1081,6 @@ void BuildControls(std::vector<SettingEntry>& out) {
     t.Group("Buttons");
     t << Modal({"Controller Mapping", "Which Switch button drives each 3DS control."},
                SettingsModal::ControllerMap, [] { return std::string{"Configure"}; });
-    t << Toggle({"Use Artic Base Controller",
-                 "Takes input from the real 3DS while connected over Artic Base."},
-                Settings::values.use_artic_base_controller);
 
     t.Group("Touch Pointer");
     t.Ini("Switch");

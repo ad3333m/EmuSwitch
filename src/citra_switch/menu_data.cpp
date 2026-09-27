@@ -341,6 +341,18 @@ bool TryLoadCached(const std::string& path, const std::string& fallback_title, G
     return s_scan_seen[path].is_title;
 }
 
+// CIA files the last scan came across, for installing.
+std::vector<std::string> s_scan_cias;
+
+bool IsCiaName(const std::string& name) {
+    const std::size_t dot = name.rfind('.');
+    if (dot == std::string::npos) {
+        return false;
+    }
+    const std::string ext = Common::ToLower(name.substr(dot));
+    return ext == ".cia" || ext == ".zcia";
+}
+
 void ScanDirectory(const std::string& directory, std::vector<GameEntry>& out, int depth,
                    bool recursive) {
     if (depth > 4) {
@@ -354,6 +366,11 @@ void ScanDirectory(const std::string& directory, std::vector<GameEntry>& out, in
                 if (recursive) {
                     ScanDirectory(path + '/', out, depth + 1, recursive);
                 }
+                return true;
+            }
+            if (IsCiaName(virtual_name)) {
+                // Not bootable: installed in the background instead (see CiasToInstall).
+                s_scan_cias.push_back(path);
                 return true;
             }
             GameEntry entry;
@@ -657,6 +674,28 @@ std::vector<CiaEntry> ListCiaFiles(const std::string& directory) {
     return out;
 }
 
+std::vector<std::string> ScannedCiaFiles() {
+    return s_scan_cias;
+}
+
+std::vector<CiaEntry> CiasToInstall(const std::vector<std::string>& paths) {
+    std::vector<CiaEntry> out;
+    for (const std::string& path : paths) {
+        CiaEntry entry;
+        entry.name = std::string{FileUtil::GetFilename(path)};
+        entry.path = path;
+        entry.size = FileUtil::GetSize(path);
+        entry.readable = ReadCiaEntry(path, entry);
+        std::uint16_t installed = 0;
+        if (entry.readable && GetInstalledVersion(entry.program_id, installed) &&
+            installed >= entry.version) {
+            continue; // Already on the emulated card, this version or newer.
+        }
+        out.push_back(std::move(entry));
+    }
+    return out;
+}
+
 std::vector<FileEntry> ListAmiiboFiles() {
     return ListFilesByExtension(GetActiveUserDir() + "amiibo/", {".bin"});
 }
@@ -712,6 +751,7 @@ std::vector<GameEntry> ScanGames() {
 
     LoadScanCache();
     s_scan_seen.clear();
+    s_scan_cias.clear();
     std::vector<GameEntry> games;
     ScanDirectory(paths.roms_dir, games, 0, paths.scan_recursive);
     // Only scan second dir when present.

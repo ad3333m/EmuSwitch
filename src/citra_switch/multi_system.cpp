@@ -256,17 +256,6 @@ void SetupPs2() {
     ConfigurePs2(found[0]);
 }
 
-// Adds `key = "value"` to a RetroArch options file unless the key is already set.
-void EnsureOption(const std::string& file, const char* key, const char* value) {
-    std::vector<std::string> lines = ReadLines(file.c_str());
-    for (const std::string& l : lines)
-        if (Trim(l).rfind(key, 0) == 0) return;
-    lines.push_back(std::string(key) + " = \"" + value + "\"");
-    const size_t slash = file.find_last_of('/');
-    MakeDirs(file.substr(0, slash));
-    WriteLines(file.c_str(), lines);
-}
-
 // Sets `key = "value"` in a RetroArch options file, replacing what was there.
 void SetOption(const std::string& file, const char* key, const char* value) {
     std::vector<std::string> lines = ReadLines(file.c_str());
@@ -300,18 +289,20 @@ void ApplyDsOptions() {
     }
 }
 
-// Dreamcast runs on Flycast's built-in BIOS, so no dc_boot.bin is needed.
-void SetupRetroArchOptions() {
-    EnsureOption("sdmc:/retroarch/config/Flycast/Flycast.opt", "flycast_hle_bios", "enabled");
-    EnsureOption("sdmc:/retroarch/retroarch-core-options.cfg", "flycast_hle_bios", "enabled");
+// Emulators unpacked by older builds for systems EmuSwitch no longer has; they only take up
+// SD card space now.
+void RemoveRetiredEmulators() {
+    for (const char* emu : {"genesis", "dc", "arcade", "pce", "ngp", "ws", "a2600", "lynx", "vb"}) {
+        remove((std::string(EMUS) + "/" + emu + ".nro").c_str());
+    }
 }
 
 void SetupThread() {
     MakeDirs(EMUS);
     for (const System& s : Systems()) MakeDirs(std::string(ROMS) + "/" + s.id);
     MakeDirs(std::string(ROMS) + "/3ds");
+    RemoveRetiredEmulators();
     SetupPs2();
-    SetupRetroArchOptions();
     s_setup_done = true;
 }
 
@@ -343,20 +334,9 @@ const std::vector<System>& Systems() {
         {"nes", "NES", "NES", "nes", 0xE1, 0x3B, 0x3B, {"nes", "fds", "unf", "unif", "zip", "7z"}, {"nes", "fds", "unf", "unif"}, true},
         {"snes", "Super Nintendo", "SNES", "snes", 0x7E, 0x6C, 0xD8, {"sfc", "smc", "fig", "swc", "bs", "zip", "7z"}, {"sfc", "smc", "fig", "swc", "bs"}, true},
         {"n64", "Nintendo 64", "N64", "n64", 0x10, 0x9A, 0x4E, {"n64", "z64", "v64", "zip", "7z"}, {"n64", "z64", "v64"}, true},
-        {"vb", "Virtual Boy", "VB", "vb", 0xD1, 0x1F, 0x3A, {"vb", "vboy", "zip"}, {"vb", "vboy"}, true},
         {"ps1", "PlayStation", "PS1", "ps1", 0x9C, 0xA3, 0xB5, {"cue", "chd", "pbp", "m3u", "ccd", "iso", "ecm"}, {"pbp", "cue", "chd", "m3u", "ccd", "ecm"}, true},
         {"ps2", "PlayStation 2", "PS2", "ps2", 0x38, 0xBD, 0xF8, {"iso", "chd", "cso", "zso", "cue"}, {"iso", "cso", "zso"}, true},
         {"psp", "PSP", "PSP", "psp", 0x4B, 0x55, 0x63, {"iso", "cso", "pbp", "chd"}, {}, true},
-        {"md", "Mega Drive / Genesis", "MD", "genesis", 0x1F, 0x1F, 0x2E, {"md", "gen", "smd", "68k", "sgd", "bin", "zip", "7z"}, {"md", "gen", "smd", "68k", "sgd"}, true},
-        {"sms", "Master System", "SMS", "genesis", 0x2B, 0x55, 0xC7, {"sms", "sg", "zip", "7z"}, {"sms", "sg"}, true},
-        {"gg", "Game Gear", "GG", "genesis", 0x33, 0x33, 0x40, {"gg", "zip", "7z"}, {"gg"}, true},
-        {"dc", "Dreamcast", "DC", "dc", 0xF0, 0x7A, 0x1E, {"cdi", "gdi", "chd", "cue"}, {"cdi", "gdi"}, true},
-        {"arcade", "Arcade", "Arcade", "arcade", 0xF5, 0x9E, 0x0B, {"zip", "7z"}, {}, true},
-        {"pce", "PC Engine", "PCE", "pce", 0xF4, 0x72, 0xB6, {"pce", "sgx", "cue", "ccd", "chd", "zip"}, {"pce", "sgx"}, true},
-        {"ngp", "Neo Geo Pocket", "NGP", "ngp", 0x0E, 0xA5, 0xE9, {"ngp", "ngc", "zip"}, {"ngp", "ngc"}, true},
-        {"ws", "WonderSwan", "WS", "ws", 0x64, 0x74, 0x8B, {"ws", "wsc", "zip"}, {"ws", "wsc"}, true},
-        {"a2600", "Atari 2600", "2600", "a2600", 0xB4, 0x53, 0x09, {"a26", "bin", "zip"}, {"a26"}, true},
-        {"lynx", "Atari Lynx", "Lynx", "lynx", 0xCA, 0x8A, 0x04, {"lnx", "zip"}, {"lnx"}, true},
         {"wiiu", "Wii U", "Wii U", "wiiu", 0x2D, 0xD4, 0xBF, {"wua", "wud", "wux", "rpx"}, {"wua", "wud", "wux", "rpx"}, false},
     };
     return systems;

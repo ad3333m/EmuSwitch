@@ -171,6 +171,8 @@ std::unordered_map<std::string, std::shared_ptr<const Picture>> g_game_pics;
 std::unordered_map<std::uint64_t, std::shared_ptr<const Picture>> g_icon_pics;
 // Default system cards, drawn once per system.
 std::unordered_map<std::string, std::shared_ptr<const Picture>> g_card_pics;
+// Logos put in for the consoles' Home sections.
+std::unordered_map<std::string, std::shared_ptr<const Picture>> g_logo_pics;
 Image g_avatar;
 std::uint64_t g_avatar_id = 0;
 
@@ -621,6 +623,18 @@ void SetSystemImage(const std::string& id, Image img) {
 bool HasSystemImage(const std::string& id) {
     std::lock_guard lock{g_pic_mutex};
     return g_system_pics.count(id) != 0;
+}
+void SetSystemLogo(const std::string& id, Image img) {
+    std::lock_guard lock{g_pic_mutex};
+    if (img.Empty()) {
+        g_logo_pics.erase(id);
+        return;
+    }
+    g_logo_pics[id] = MakePicture(std::move(img));
+}
+bool HasSystemLogo(const std::string& id) {
+    std::lock_guard lock{g_pic_mutex};
+    return g_logo_pics.count(id) != 0;
 }
 void SetGameImage(const std::string& path, Image img) {
     std::lock_guard lock{g_pic_mutex};
@@ -1084,6 +1098,63 @@ bool CarouselPictureButtonHit(const Canvas& c, int x, int y) {
     return x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h;
 }
 
+namespace {
+
+// A console card's face at size s: its picture (or its default look) made square, with a gloss
+// and a fine edge. Corners are rounded when it's drawn.
+std::shared_ptr<const Image> CardFace(const Fonts& f, const SystemCard& card, int s) {
+    std::shared_ptr<const Picture> pic = Find(g_system_pics, card.id);
+    if (!pic) {
+        pic = DefaultCard(f, card);
+    }
+    if (!pic) {
+        return nullptr;
+    }
+    return Cached(Key({7, pic->id, u64(s), card.color}), true, [&] {
+        const Image sq = BuildSquare(pic->img, s);
+        Canvas tmp;
+        tmp.Resize(s, s);
+        if (!sq.opaque) {
+            const u32 col = card.color;
+            tmp.FillRoundAAWith(0, 0, s, s, 0, [col](float k) {
+                return Canvas::Mix(Canvas::Mix(col, kWhite, 0.10f), Canvas::Mix(col, kBlack, 0.55f), k);
+            });
+        }
+        tmp.DrawImage(sq, 0, 0);
+        const int rr = static_cast<int>(s * 0.14f);
+        tmp.FillRoundAAWith(0, 0, s, s * 2 / 5, rr, [](float k) { return White(A(0.12f * (1 - k) * (1 - k))); });
+        tmp.RingRoundAA(0, 0, s, s, rr, 1.4f, White(0x30));
+        return CanvasImage(tmp);
+    });
+}
+
+// A small filled triangle, pointing up or down, centred on (cx, cy); edges are antialiased.
+void Arrow(Canvas& c, float cx, float cy, float size, bool up, u32 color) {
+    const float hw = size, hh = size * 0.8f, top = cy - hh / 2;
+    const int x0 = static_cast<int>(std::floor(cx - hw - 1)), x1 = static_cast<int>(std::ceil(cx + hw + 1));
+    const int y0 = static_cast<int>(std::floor(top - 1)), y1 = static_cast<int>(std::ceil(top + hh + 1));
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            int hits = 0;
+            for (int sy = 0; sy < 4; ++sy) {
+                const float v0 = (y + (sy + 0.5f) / 4.0f - top) / hh;
+                if (v0 < 0.0f || v0 > 1.0f) {
+                    continue;
+                }
+                const float half = hw * (up ? v0 : 1.0f - v0);
+                for (int sx = 0; sx < 4; ++sx) {
+                    hits += std::fabs(x + (sx + 0.5f) / 4.0f - cx) <= half ? 1 : 0;
+                }
+            }
+            if (hits > 0) {
+                c.Blend(x, y, color, static_cast<u8>(hits * 255 / 16));
+            }
+        }
+    }
+}
+
+} // namespace
+
 void DrawSystemsCarousel(Canvas& c, const Fonts& f, const std::vector<SystemCard>& cards, float anim, int selected,
                          const CarouselText& text, u32 accent, float t) {
     if (cards.empty()) return;
@@ -1110,30 +1181,8 @@ void DrawSystemsCarousel(Canvas& c, const Fonts& f, const std::vector<SystemCard
         if (cr.k > 0.05f) {
             c.Glow(cr.x, cr.y, cr.s, cr.s, r, 44, WithAlpha(card.color, A(0.5f * cr.k)), true, 10);
         }
-        std::shared_ptr<const Picture> pic = Find(g_system_pics, card.id);
-        if (!pic) {
-            pic = DefaultCard(f, card);
-        }
         const int rest = cr.k > 0.5f ? static_cast<int>(kCardBig) : static_cast<int>(kCardSmall);
-        std::shared_ptr<const Image> face;
-        if (pic) {
-            face = Cached(Key({7, pic->id, u64(rest), card.color}), true, [&] {
-                const Image sq = BuildSquare(pic->img, rest);
-                Canvas tmp;
-                tmp.Resize(rest, rest);
-                if (!sq.opaque) {
-                    const u32 col = card.color;
-                    tmp.FillRoundAAWith(0, 0, rest, rest, 0, [col](float k) {
-                        return Canvas::Mix(Canvas::Mix(col, kWhite, 0.10f), Canvas::Mix(col, kBlack, 0.55f), k);
-                    });
-                }
-                tmp.DrawImage(sq, 0, 0);
-                const int rr = static_cast<int>(rest * 0.14f);
-                tmp.FillRoundAAWith(0, 0, rest, rest * 2 / 5, rr, [](float k) { return White(A(0.12f * (1 - k) * (1 - k))); });
-                tmp.RingRoundAA(0, 0, rest, rest, rr, 1.4f, White(0x30));
-                return CanvasImage(tmp);
-            });
-        }
+        const std::shared_ptr<const Image> face = CardFace(f, card, rest);
         if (face && face->w == cr.s) {
             c.DrawImage(*face, cr.x, cr.y, r);
         } else if (face) {
@@ -1144,6 +1193,13 @@ void DrawSystemsCarousel(Canvas& c, const Fonts& f, const std::vector<SystemCard
         if (i == selected) {
             c.RingRoundAAWith(cr.x - 6, cr.y - 6, cr.s + 12, cr.s + 12, r + 6, 3.2f,
                               [t](float p) { return RingAt(p, t * 0.12f); });
+            if (text.moving) {
+                // Being moved: arrows above and below, nudging the way it can go.
+                const float bob = std::sin(t * 6.0f) * 3.0f;
+                const float cx = cr.x + cr.s / 2.0f;
+                Arrow(c, cx, cr.y - 26.0f - bob, 12.0f, true, kColAccent);
+                Arrow(c, cx, cr.y + cr.s + 26.0f + bob, 12.0f, false, kColAccent);
+            }
         }
     }
 
@@ -1154,7 +1210,7 @@ void DrawSystemsCarousel(Canvas& c, const Fonts& f, const std::vector<SystemCard
     c.Disc(tx + 6.0f, mid_y + 47, 4.5f, text.status_ok ? MakeColor(0x6E, 0xE7, 0xB7) : MakeColor(0xFF, 0xCE, 0x78));
     f.regular->Draw(c, tx + 18, static_cast<int>(mid_y + 53), text.status, 16, kColTextDim);
 
-    if (!text.picture_button) {
+    if (!text.picture_button || text.moving) {
         return;
     }
     const Rect b = PictureButton();
@@ -1167,6 +1223,122 @@ void DrawSystemsCarousel(Canvas& c, const Fonts& f, const std::vector<SystemCard
     DrawIcon(c, DockIconShape::Picture, float(b.x + 52), float(b.y + b.h / 2), 22, kColText);
     f.bold->Draw(c, b.x + 70, CenterBaseline(b.y, b.h, 16), text.has_picture ? "Change picture" : "Set a picture", 16,
                  kColText);
+}
+
+// ---- Home sections and a console's games -----------------------------------------------------------------
+
+int DrawSystemLogo(Canvas& c, const Fonts& f, const SystemCard& card, int x, int y, int h) {
+    if (auto logo = Find(g_logo_pics, card.id)) {
+        // A logo keeps its shape: as tall as the band, as wide as that makes it (within reason).
+        const float k = std::min(float(h) / logo->img.h, 280.0f / logo->img.w);
+        const int w = std::max(1, static_cast<int>(std::lround(logo->img.w * k)));
+        const int lh = std::max(1, static_cast<int>(std::lround(logo->img.h * k)));
+        const auto img = Cached(Key({13, logo->id, u64(w), u64(lh)}), true, [&] { return Gfx::Resize(logo->img, w, lh); });
+        if (img) {
+            c.DrawImage(*img, x, y + (h - lh) / 2);
+        }
+        return w;
+    }
+    // No logo: the console's short name, heavy and slanted, in a pill of its colour.
+    const int ts = std::max(12, static_cast<int>(h * 0.5f));
+    const int tw = f.mark->Measure(card.badge, ts);
+    const int w = tw + h;
+    const auto pill = Cached(Key({12, std::hash<std::string_view>{}(card.id), u64(h), card.color}), false, [&] {
+        return Gfx::RenderSprite(w + 12, h + 12, 6, 6, [&](Canvas& t) {
+            const u32 col = card.color;
+            t.FillRoundAAWith(0, 0, w, h, h / 2, [col](float k) {
+                return Canvas::Mix(Canvas::Mix(col, kWhite, 0.16f), Canvas::Mix(col, kBlack, 0.38f), k);
+            });
+            t.FillRoundAAWith(0, 0, w, h / 2, h / 2, [](float k) { return White(A(0.18f * (1 - k))); });
+            t.RingRoundAA(0, 0, w, h, h / 2, 1.2f, White(0x48));
+            const int bx = (w - tw) / 2, by = h / 2 + static_cast<int>(ts * 0.36f);
+            f.mark->Draw(t, bx + 1, by + 2, card.badge, ts, Black(0x60));
+            f.mark->Draw(t, bx, by, card.badge, ts, kWhite);
+        });
+    });
+    if (pill) {
+        c.Glow(x, y, w, h, h / 2, 14, WithAlpha(card.color, 0x50), true, 3);
+        c.DrawSprite(*pill, x - 6, y - 6);
+    }
+    return w;
+}
+
+void DrawSectionHeader(Canvas& c, const Fonts& f, const SystemCard& card, std::string_view name,
+                       std::string_view count, int x, int y, int w, float alpha) {
+    // No early return for rows off this band: the warm-up pass has to build the logo.
+    if (alpha <= 0.01f) {
+        return;
+    }
+    Canvas::FadeScope fade{c, alpha};
+    constexpr int kBand = 36;
+    const int by = y + 4;
+    const bool has_logo = HasSystemLogo(std::string{card.id});
+    int tx = x + DrawSystemLogo(c, f, card, x, by, has_logo ? 40 : kBand) + 16;
+    const int base = CenterBaseline(by, kBand, 22);
+    if (!has_logo) {
+        f.bold->Draw(c, tx, base, name, 22, kColText);
+        tx += f.bold->Measure(name, 22) + 14;
+    }
+    f.regular->Draw(c, tx, CenterBaseline(by, kBand, 16), count, 16, kColTextDim);
+    tx += f.regular->Measure(count, 16) + 18;
+    if (tx < x + w) {
+        // A hairline that fades out to the right.
+        const int lw = x + w - tx;
+        c.FillRoundAAPix(tx, by + kBand / 2, lw, 1, 0, [](float fx, float) { return White(A(0.16f * (1.0f - fx))); });
+    }
+}
+
+void DrawSystemCard(Canvas& c, const Fonts& f, const SystemCard& card, int x, int y, int s) {
+    const int r = static_cast<int>(s * 0.14f);
+    c.SoftShadow(x, y, s, s, r, 18, 8, A(0.6f));
+    c.Glow(x, y, s, s, r, 40, WithAlpha(card.color, A(0.45f)), true, 10);
+    if (const auto face = CardFace(f, card, s)) {
+        c.DrawImage(*face, x, y, r);
+    } else {
+        c.FillRoundGradient(x, y, s, s, r, card.color, Canvas::Mix(card.color, kBlack, 0.6f));
+    }
+}
+
+void DrawGameRow(Canvas& c, const Fonts& f, const TileInfo& t, std::string_view detail, int x, int y, int w,
+                 int h, float focus) {
+    const int s = h - 16;
+    const std::shared_ptr<const Picture> pic = TilePicture(t);
+    // Looked up (and, in the warm-up pass, built) even when off this band.
+    const std::shared_ptr<const Image> face = TileFace(f, t, pic, s);
+    if (!c.RowsVisible(y - 24, h + 48)) {
+        return;
+    }
+    const int r = std::min(18, h / 2);
+    const float k = std::clamp(focus, 0.0f, 1.0f);
+    if (k > 0.01f) {
+        c.Glow(x, y, w, h, r, 18, WithAlpha(kColAccent, A(0.22f * k)), true, 2);
+        c.FillRoundAAWith(x, y, w, h, r, [k](float v) { return White(A((0.13f - 0.05f * v) * k)); });
+        c.RingRoundAA(x, y, w, h, r, 1.2f, White(A(0.16f * k)));
+    } else {
+        c.FillRoundAA(x, y, w, h, r, White(0x09));
+    }
+    const int px = x + 8, py = y + 8;
+    const int pr = std::max(8, TileRadius(s));
+    c.SoftShadow(px, py, s, s, pr, 8, 3, A(0.4f));
+    if (face) {
+        c.DrawImage(*face, px, py, pr);
+    } else {
+        c.FillRoundGradient(px, py, s, s, pr, Canvas::Mix(t.system_color, kBlack, 0.40f),
+                            Canvas::Mix(t.system_color, kBlack, 0.80f));
+    }
+    const int tx = px + s + 18;
+    const int right = x + w - (k > 0.5f ? 110 : 20);
+    f.bold->Draw(c, tx, y + h / 2 - 3, f.bold->Truncate(t.title, 21, right - tx), 21, kColText);
+    f.regular->Draw(c, tx, y + h / 2 + 21, f.regular->Truncate(detail, 15, right - tx), 15, kColTextDim);
+    if (k > 0.5f) {
+        // "A Play" on the focused row.
+        Canvas::FadeScope fs{c, (k - 0.5f) * 2.0f};
+        const int chip = 26, cx = x + w - 96, cy = y + (h - chip) / 2;
+        c.FillRoundAA(cx, cy, chip, chip, chip / 2, White(0xEE));
+        const int aw = f.bold->Measure("A", 14);
+        f.bold->Draw(c, cx + (chip - aw) / 2, CenterBaseline(cy, chip, 14), "A", 14, MakeColor(0x1A, 0x18, 0x24));
+        f.bold->Draw(c, cx + chip + 9, CenterBaseline(cy, chip, 17), "Play", 17, kColText);
+    }
 }
 
 // ---- panels ------------------------------------------------------------------------------------------------

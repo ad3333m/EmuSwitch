@@ -206,6 +206,8 @@ u64 PollInput(PadState& pad, SwitchFrontend::InputState& state) {
 }
 
 void RunGame(PadState& pad, const std::string& rom) {
+    // A game started straight from the command line takes the display from the loading screen.
+    SwitchFrontend::EndStartupScreen();
     SwitchFrontend::PrepareBootScreenLayout();
     if (!SwitchFrontend::CreateWindow(nwindowGetDefault())) {
         std::printf("EmuWindow no worky.\n");
@@ -366,6 +368,8 @@ int main(int argc, char* argv[]) {
 
     // Resolve SD-card dirs and create folders/files if not present
     const int launch_count = SwitchFrontend::Bootstrap();
+    // The loading screen goes up as soon as the settings (the menu's rotation) are read.
+    SwitchFrontend::ShowStartupScreen("Starting up...");
     // EmuSwitch: unpack the other systems' emulators and set up PS2 in the background.
     SwitchFrontend::Multi::StartSetup();
     std::printf("FS & logging up (launch #%d). Logs are located at sdmc:/switch/dekopon/log/\n",
@@ -378,6 +382,7 @@ int main(int argc, char* argv[]) {
     StartSixAxis();
 
     SwitchFrontend::InitializeInput();
+    SwitchFrontend::ShowStartupScreen("Getting everything ready...");
 
     std::string pending_rom = (argc > 1 && argv[1] != nullptr) ? argv[1] : std::string{};
     boot_boost.reset();

@@ -59,17 +59,8 @@ core gambatte gb
 core nestopia nes
 core snes9x snes
 core mupen64plus_next n64
-core mednafen_vb vb
 core pcsx_rearmed ps1
 core ppsspp psp
-core genesis_plus_gx genesis
-core flycast dc
-core fbneo arcade
-core mednafen_pce_fast pce
-core mednafen_ngp ngp
-core mednafen_wswan ws
-core stella a2600
-core handy lynx
 ls -la "$EMUS"
 
 # The menu's font: Inter (SIL Open Font License), in the romfs next to the emulators.

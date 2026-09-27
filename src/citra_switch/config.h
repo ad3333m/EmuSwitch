@@ -83,6 +83,11 @@ void SetMenuInputRotated(bool enabled);
 bool IsPictureEditingEnabled();
 void SetPictureEditingEnabled(bool enabled);
 
+// The order of the consoles on the Systems page and the Home sections, as comma-separated ids
+// ("3ds,ds,gba,..."); empty for the default order.
+std::string GetSystemsOrder();
+void SetSystemsOrder(const std::string& order);
+
 // GitHub updater preferences.
 UpdateChannel GetUpdateChannel();
 void SetUpdateChannel(UpdateChannel channel);

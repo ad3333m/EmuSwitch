@@ -40,6 +40,8 @@ struct Fit {
 constexpr Fit kGameFit{176, 300};
 constexpr Fit kSystemFit{232, 360};
 constexpr int kPreviewSide = 360;
+// Logos are wide and drawn about 40 pixels high: the whole logo within a 560 square is plenty.
+constexpr int kLogoSide = 560;
 
 // "system" -> id -> path and "game" -> rom path -> path.
 std::map<std::string, std::string> s_system_paths;
@@ -291,12 +293,30 @@ std::string ApplySystem(const std::string& id, const std::map<std::string, std::
 
 // ---- the background loader ----
 
+enum JobKind { kGameJob, kSystemJob, kLogoJob };
 struct Job {
     bool preview = false;
-    std::string key;   // rom path (games) or file (previews)
+    std::string key;   // rom path (games), system id (systems, logos) or file (previews)
     std::string path;  // the picture
     std::string stamp;
+    JobKind kind = kGameJob;
 };
+
+// Settles `key` on `stamp` (a picture applied by hand), dropping requests still on their way.
+// Takes g_mutex.
+void Settle(const std::string& key, const std::string& stamp);
+
+// What g_applied / g_pending know a job by: games by rom path, the rest by kind and id.
+std::string AppliedKey(JobKind kind, const std::string& key) {
+    switch (kind) {
+    case kSystemJob:
+        return "system:" + key;
+    case kLogoJob:
+        return "logo:" + key;
+    default:
+        return key;
+    }
+}
 struct Done {
     Job job;
     Gfx::Image img;
@@ -317,6 +337,15 @@ std::string g_preview_want;
 bool g_preview_ready = false;
 Done g_preview;
 
+void Settle(const std::string& key, const std::string& stamp) {
+    std::lock_guard lock{g_mutex};
+    const std::string prefix = key + "\n";
+    for (auto it = g_pending.lower_bound(prefix); it != g_pending.end() && it->rfind(prefix, 0) == 0;) {
+        it = g_pending.erase(it);
+    }
+    g_applied[key] = stamp;
+}
+
 void Loader() {
     // Core 2 is idle between frames; the menu's own thread keeps core 0.
     Common::Horizon::PinCurrentThread(2);
@@ -331,7 +360,15 @@ void Loader() {
             if (job.preview && job.key != g_preview_want) continue; // the picker moved on
         }
         Done done;
-        done.error = Decode(job.path, job.preview ? Fit{kPreviewSide, kPreviewSide} : kGameFit, job.preview, done.img);
+        if (job.preview) {
+            done.error = Decode(job.path, Fit{kPreviewSide, kPreviewSide}, true, done.img);
+        } else if (job.kind == kSystemJob) {
+            done.error = Decode(job.path, kSystemFit, false, done.img);
+        } else if (job.kind == kLogoJob) {
+            done.error = Decode(job.path, Fit{kLogoSide, kLogoSide}, true, done.img);
+        } else {
+            done.error = Decode(job.path, kGameFit, false, done.img);
+        }
         done.job = std::move(job);
         std::lock_guard lock{g_mutex};
         if (done.job.preview) {
@@ -431,8 +468,49 @@ std::string LoadProfile() {
 }
 
 void LoadSystemArt() {
+    // Decoded in the background like the games' pictures, so start-up doesn't wait on them;
+    // ones that haven't changed since the last call aren't read again.
     const auto listed = ListPictures("systems");
-    for (const SystemInfo& s : Systems()) ApplySystem(s.id, &listed);
+    const auto logos = ListPictures("logos");
+    ReadConfig();
+    std::vector<Job> jobs;
+    const auto want = [&jobs](JobKind kind, const std::string& id, const std::string& path) {
+        const std::string stamp = Stamp(path);
+        const std::string key = AppliedKey(kind, id);
+        std::lock_guard lock{g_mutex};
+        const auto it = g_applied.find(key);
+        if ((it != g_applied.end() && it->second == stamp) || g_pending.count(key + "\n" + stamp)) {
+            return;
+        }
+        if (path.empty()) {
+            if (kind == kSystemJob) {
+                Skin::SetSystemImage(id, Gfx::Image{});
+            } else {
+                Skin::SetSystemLogo(id, Gfx::Image{});
+            }
+            g_applied[key] = stamp;
+            return;
+        }
+        g_pending.insert(key + "\n" + stamp);
+        jobs.push_back({false, id, path, stamp, kind});
+    };
+    for (const SystemInfo& sys : Systems()) {
+        std::string path;
+        if (const auto it = s_system_paths.find(sys.id); it != s_system_paths.end() && Exists(it->second)) {
+            path = it->second;
+        } else if (const auto l = listed.find(Lower(sys.id)); l != listed.end()) {
+            path = l->second;
+        }
+        want(kSystemJob, sys.id, path);
+        const auto logo = logos.find(Lower(sys.id));
+        want(kLogoJob, sys.id, logo != logos.end() ? logo->second : std::string{});
+    }
+    if (jobs.empty()) return;
+    std::lock_guard lock{g_mutex};
+    // Ahead of any game pictures: there are only a few and they're on every page.
+    for (auto it = jobs.rbegin(); it != jobs.rend(); ++it) g_queue.push_front(std::move(*it));
+    EnsureLoader();
+    g_wake.notify_all();
 }
 
 void LoadGameArt(const std::vector<GameEntry>& games) {
@@ -469,10 +547,25 @@ bool Pump() {
         done.swap(g_done);
     }
     for (Done& d : done) {
-        Skin::SetGameImage(d.job.key, d.error.empty() ? std::move(d.img) : Gfx::Image{});
-        std::lock_guard lock{g_mutex};
-        g_applied[d.job.key] = d.job.stamp;
-        g_pending.erase(d.job.key + "\n" + d.job.stamp);
+        const std::string key = AppliedKey(d.job.kind, d.job.key);
+        {
+            // A picture set by hand in the meantime wins over this older request.
+            std::lock_guard lock{g_mutex};
+            if (g_pending.erase(key + "\n" + d.job.stamp) == 0) continue;
+            g_applied[key] = d.job.stamp;
+        }
+        Gfx::Image img = d.error.empty() ? std::move(d.img) : Gfx::Image{};
+        switch (d.job.kind) {
+        case kSystemJob:
+            Skin::SetSystemImage(d.job.key, std::move(img));
+            break;
+        case kLogoJob:
+            Skin::SetSystemLogo(d.job.key, std::move(img));
+            break;
+        default:
+            Skin::SetGameImage(d.job.key, std::move(img));
+            break;
+        }
     }
     return !done.empty();
 }
@@ -489,7 +582,7 @@ void StopLoading() {
     std::lock_guard lock{g_mutex};
     // Finished work is still good; unfinished work is asked for again by the next rescan.
     g_pending.clear();
-    for (const Done& d : g_done) g_pending.insert(d.job.key + "\n" + d.job.stamp);
+    for (const Done& d : g_done) g_pending.insert(AppliedKey(d.job.kind, d.job.key) + "\n" + d.job.stamp);
     g_preview_want.clear();
     g_preview_ready = false;
 }
@@ -498,14 +591,16 @@ std::string SetSystemArt(const std::string& id, const std::string& image_path) {
     ReadConfig();
     if (image_path.empty()) s_system_paths.erase(id);
     else s_system_paths[id] = image_path;
-    const std::string err = ApplySystem(id);
+    std::string err = ApplySystem(id);
     if (!err.empty() && !image_path.empty()) {
         s_system_paths.erase(id);
         ApplySystem(id);
-        return err;
+    } else {
+        err.clear();
+        WriteConfig();
     }
-    WriteConfig();
-    return "";
+    Settle(AppliedKey(kSystemJob, id), Stamp(SystemArtPath(id)));
+    return err;
 }
 
 std::string SetGameArt(const GameEntry& game, const std::string& image_path) {
@@ -526,10 +621,7 @@ std::string SetGameArt(const GameEntry& game, const std::string& image_path) {
         return err;
     }
     Skin::SetGameImage(game.path, std::move(img));
-    {
-        std::lock_guard lock{g_mutex};
-        g_applied[game.path] = Stamp(path);
-    }
+    Settle(game.path, Stamp(path));
     WriteConfig();
     return "";
 }

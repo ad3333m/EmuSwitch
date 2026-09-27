@@ -74,6 +74,7 @@ SwitchFrontend::CameraTarget s_camera_target = SwitchFrontend::CameraTarget::All
 int s_menu_rotation = 0;
 bool s_menu_input_rotated = false;
 bool s_picture_editing = true;
+std::string s_systems_order;
 int s_ds_screen_layout = 0;
 int s_ds_screen_gap = 0;
 
@@ -256,6 +257,7 @@ private:
             Common::StripSpaces(config->Get("Switch", "dismissed_update", ""));
         s_last_seen_version =
             Common::StripSpaces(config->Get("Switch", "last_seen_version", ""));
+        s_systems_order = Common::StripSpaces(config->Get("Switch", "systems_order", ""));
 
         // Each control stores the index of the physical Switch button it drives.
         for (int i = 0; i < SwitchFrontend::NumMappableControls; ++i) {
@@ -348,6 +350,8 @@ private:
             out += "# Build that last reached the launcher.\n";
             out += "last_seen_version = " + s_last_seen_version + '\n';
             out += "launch_count = " + std::to_string(launch_count) + '\n';
+            out += "# Order of the consoles on the Systems page and the Home screen.\n";
+            out += "systems_order = " + s_systems_order + '\n';
             out += "# Which one-time default changes this config has had.\n";
             out += "defaults_version = " + std::to_string(defaults_version) + '\n';
             const SwitchFrontend::CustomScreenLayout layout = SwitchFrontend::GetCustomScreenLayout();
@@ -564,6 +568,14 @@ bool IsPictureEditingEnabled() {
 
 void SetPictureEditingEnabled(bool enabled) {
     s_picture_editing = enabled;
+}
+
+std::string GetSystemsOrder() {
+    return s_systems_order;
+}
+
+void SetSystemsOrder(const std::string& order) {
+    s_systems_order = order;
 }
 
 int GetDsScreenLayout() {

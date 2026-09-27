@@ -115,6 +115,13 @@ bool GetInstalledVersion(std::uint64_t program_id, std::uint16_t& version);
 // The .cia/.zcia files in `directory`, sorted by name.
 std::vector<CiaEntry> ListCiaFiles(const std::string& directory);
 
+// The .cia/.zcia files the last ScanGames() came across in the ROM folders.
+std::vector<std::string> ScannedCiaFiles();
+
+// Of `paths`, the CIAs that aren't installed yet (or are newer than what is). Reads each file's
+// header, so best run off the menu's thread.
+std::vector<CiaEntry> CiasToInstall(const std::vector<std::string>& paths);
+
 // The .bin files in the amiibo directory, sorted by name.
 std::vector<FileEntry> ListAmiiboFiles();
 

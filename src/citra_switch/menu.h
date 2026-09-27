@@ -5,6 +5,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <switch.h>
 
 // The console UI.
@@ -23,6 +24,12 @@ struct MenuResult {
 // Draws the library/settings menu on the default nwindow and blocks until the user
 // launches a game or exits.
 MenuResult RunMenu(PadState& pad);
+
+// Puts the loading screen up (or updates it) with `status` under the app's name, before the
+// menu exists; the menu carries on from it without a blank frame.
+void ShowStartupScreen(std::string_view status);
+// Takes the loading screen down if the menu didn't take it over (a game started straight away).
+void EndStartupScreen();
 
 // Queues a one-shot notice for the next RunMenu entry.
 void SetMenuNotice(const std::string& text, bool error = true);
