@@ -12,7 +12,6 @@
 
 #include "citra_switch/menu_gfx.h"
 #include "citra_switch/menu_skin.h"
-#include "citra_switch/rail_icons.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -23,7 +22,7 @@ using namespace SwitchFrontend::Skin::Layout;
 
 namespace {
 
-// A stand-in for a 3DS SMDH icon: a colourful 48x48 gradient with a simple shape.
+// Stand-in for a 3DS SMDH icon: a colourful 48x48 gradient with a blob.
 std::vector<u32> FakeIcon(int seed) {
     std::vector<u32> px(48 * 48);
     const float hue = seed * 0.61f;
@@ -34,15 +33,27 @@ std::vector<u32> FakeIcon(int seed) {
             const float g = 0.5f + 0.5f * std::sin(hue + 2.1f + t * 2.0f);
             const float b = 0.5f + 0.5f * std::sin(hue + 4.2f + t * 2.0f);
             const float dx = x - 24.0f, dy = y - 26.0f;
-            const bool blob = dx * dx + dy * dy < 150.0f;
-            const float k = blob ? 1.0f : 0.72f;
+            const float k = dx * dx + dy * dy < 150.0f ? 1.0f : 0.72f;
             px[y * 48 + x] = MakeColor(u8(255 * r * k), u8(255 * g * k), u8(255 * b * k));
         }
     return px;
 }
 
+// A fake avatar: warm gradient with a lighter circle.
+std::vector<u32> FakeAvatar() {
+    std::vector<u32> px(64 * 64);
+    for (int y = 0; y < 64; ++y)
+        for (int x = 0; x < 64; ++x) {
+            const float dx = x - 32.0f, dy = y - 26.0f;
+            const bool head = dx * dx + dy * dy < 150.0f || (y > 44 && std::fabs(dx) < 22.0f);
+            px[y * 64 + x] = head ? MakeColor(0xF4, 0xD9, 0xC4) : MakeColor(u8(40 + x), u8(90 + y), 200);
+        }
+    return px;
+}
+
 struct FakeGame {
-    std::string title, subtitle, system;
+    std::string title, badge;
+    u32 color;
     bool icon;
 };
 
@@ -63,90 +74,104 @@ int main(int argc, char** argv) {
     bold.Init((fonts + "/Inter-Bold.ttf").c_str());
     mark.Init((fonts + "/Inter-BlackItalic.ttf").c_str());
     const Skin::Fonts f{&regular, &bold, &mark};
+    Skin::SetAvatar(FakeAvatar(), 64, 64);
 
-    const std::vector<Skin::RailEntry> rail = {
-        {"Library", RailIcons::kLibrary}, {"Systems", RailIcons::kSystems}, {"Install", RailIcons::kInstall},
-        {"Settings", RailIcons::kSettings}, {"Paths", RailIcons::kPaths}, {"Artic", nullptr},
+    const std::vector<Skin::DockItem> dock = {
+        {"Home", Skin::DockIcon::Home},         {"Systems", Skin::DockIcon::Systems},
+        {"Install", Skin::DockIcon::Install},   {"Settings", Skin::DockIcon::Settings},
+        {"Paths", Skin::DockIcon::Folder},      {"Artic", Skin::DockIcon::Text, "AB"},
     };
-
+    const u32 red = MakeColor(0xE2, 0x1B, 0x33);
     const std::vector<FakeGame> games = {
-        {"Animal Crossing: New Leaf", "Nintendo", "3ds", true},
-        {"Castlevania: Aria of Sorrow", "Game Boy Advance", "gba", false},
-        {"Final Fantasy X", "PlayStation 2", "ps2", false},
-        {"Fire Emblem Awakening", "Nintendo", "3ds", true},
-        {"Kirby Super Star", "Super Nintendo", "snes", false},
-        {"Mario Kart 7", "Nintendo", "3ds", true},
-        {"Metroid Prime Hunters", "Nintendo DS", "ds", false},
-        {"Pokemon Crystal", "Game Boy", "gb", false},
-        {"Super Mario 64", "Nintendo 64", "n64", false},
-        {"The Wind Waker HD", "Wii U", "wiiu", false},
-        {"Tekken 3", "PlayStation", "ps1", false},
-        {"Sonic the Hedgehog 2", "Mega Drive / Genesis", "md", false},
+        {"Animal Crossing: New Leaf", "3DS", red, true},
+        {"Castlevania: Aria of Sorrow", "GBA", MakeColor(0x8B, 0x5C, 0xF6), false},
+        {"Final Fantasy X", "PS2", MakeColor(0x38, 0xBD, 0xF8), false},
+        {"Fire Emblem Awakening", "3DS", red, true},
+        {"Kirby Super Star", "SNES", MakeColor(0x7E, 0x6C, 0xD8), false},
+        {"Mario Kart 7", "3DS", red, true},
+        {"Metroid Prime Hunters", "DS", MakeColor(0x3D, 0x7B, 0xFF), false},
+        {"Pokemon Crystal", "GB", MakeColor(0x22, 0xC5, 0x5E), false},
+        {"Super Mario 64", "N64", MakeColor(0x10, 0x9A, 0x4E), false},
+        {"The Wind Waker HD", "Wii U", MakeColor(0x2D, 0xD4, 0xBF), false},
+        {"Tekken 3", "PS1", MakeColor(0x9C, 0xA3, 0xB5), false},
     };
     std::vector<std::vector<u32>> icons;
     for (std::size_t i = 0; i < games.size(); ++i) icons.push_back(FakeIcon(int(i) + 3));
 
-    auto frame = [&](Canvas& c, int pill, int ghost, int selected, bool content_focus, bool empty, const char* toast) {
+    auto hints = [&](Canvas& c, std::vector<std::pair<const char*, const char*>> left,
+                     std::vector<std::pair<const char*, const char*>> right) {
+        const int y = c.Height() - 44;
+        int x = 40;
+        for (auto& [b, l] : left) x += Skin::DrawHint(c, f, x, y, b, l) + 24;
+        // Right-aligned: measure by drawing off-screen first.
+        int total = 0;
+        for (auto& [b, l] : right) total += Skin::DrawHint(c, f, -2000, -2000, b, l) + 24;
+        x = c.Width() - 40 - total + 24;
+        for (auto& [b, l] : right) x += Skin::DrawHint(c, f, x, y, b, l) + 24;
+    };
+
+    auto home = [&](Canvas& c, int selected, bool dock_focus, float t) {
         Skin::DrawBackdrop(c);
-        Skin::DrawHintBar(c);
-        Skin::DrawRail(c, f, rail, pill, ghost);
-        Skin::DrawHeader(c, f, "Library", empty ? "0 games" : std::to_string(games.size()) + " games");
-        if (empty) {
-            Skin::DrawEmptyLibrary(c, f, "sdmc:/switch/dekopon/roms/");
-        } else {
-            const Skin::Grid grid = Skin::ComputeGrid(c.Width(), c.Height());
-            for (int i = 0; i < int(games.size()); ++i) {
-                const int row = i / grid.cols, col = i % grid.cols;
-                if (row >= grid.visible_rows) break;
-                Skin::TileInfo t;
-                t.title = games[i].title;
-                t.subtitle = games[i].subtitle;
-                t.system_id = games[i].system;
-                t.art_key = games[i].title;
-                if (games[i].icon) {
-                    t.icon = &icons[i];
-                    t.icon_size = 48;
-                }
-                if (i == 3) t.tags = {"SD"};
-                Skin::DrawTile(c, f, t, grid.start_x + col * (kTileW + kTileGap), grid.top + row * (kTileH + kTileGap),
-                               i == selected, content_focus);
+        Skin::TopBar bar{"gd_adv", "", "03:02", "PM", 76, true};
+        Skin::DrawTopBar(c, f, bar);
+        const Skin::Grid grid = Skin::ComputeGrid(c.Width(), c.Height());
+        for (int i = 0; i < grid.cols * grid.visible_rows; ++i) {
+            const int x = grid.start_x + (i % grid.cols) * (kTileW + kTileGap);
+            const int y = grid.top + (i / grid.cols) * (kTileH + kTileGap);
+            if (i >= int(games.size())) {
+                Skin::DrawEmptySlot(c, x, y);
+                continue;
             }
-            const int track_h = grid.visible_rows * (kTileH + kTileGap) - kTileGap;
-            Skin::DrawScrollbar(c, c.Width() - 12, grid.top, track_h, grid.top, track_h * 2 / 3);
+            if (i == selected && !dock_focus) continue;
+            Skin::TileInfo ti;
+            ti.title = games[i].title;
+            ti.system_badge = games[i].badge;
+            ti.system_color = games[i].color;
+            if (games[i].icon) { ti.icon = &icons[i]; ti.icon_size = 48; }
+            Skin::DrawTile(c, f, ti, x, y, i == selected, !dock_focus, t);
         }
-        int hx = kContentX + 32;
-        const int hy = c.Height() - kHintH + (kHintH - 28) / 2;
-        if (content_focus) {
-            hx += Skin::DrawHint(c, f, hx, hy, "A", "Play") + 26;
-            hx += Skin::DrawHint(c, f, hx, hy, "X", "Search") + 26;
-            hx += Skin::DrawHint(c, f, hx, hy, "Y", "Refresh") + 26;
-            hx += Skin::DrawHint(c, f, hx, hy, "+", "Details") + 26;
-        } else {
-            hx += Skin::DrawHint(c, f, hx, hy, "A", "Open") + 26;
-            hx += Skin::DrawHint(c, f, hx, hy, "B", "Back") + 26;
+        if (!dock_focus) {
+            Skin::TileInfo ti;
+            ti.title = games[selected].title;
+            ti.system_badge = games[selected].badge;
+            ti.system_color = games[selected].color;
+            if (games[selected].icon) { ti.icon = &icons[selected]; ti.icon_size = 48; }
+            Skin::DrawTile(c, f, ti, grid.start_x + (selected % grid.cols) * (kTileW + kTileGap),
+                           grid.top + (selected / grid.cols) * (kTileH + kTileGap), true, true, t);
         }
-        Skin::DrawHint(c, f, hx, hy, "+ -", "Exit");
-        if (toast) Skin::DrawToast(c, f, toast, false);
+        const int pill_y = grid.top + grid.visible_rows * (kTileH + kTileGap) - kTileGap + 12;
+        Skin::DrawTitlePill(c, f, pill_y, games[selected].title, "Nintendo 3DS", games[selected].color);
+        Skin::DrawDock(c, f, dock, 0, dock_focus ? 1 : 0, dock_focus);
+        hints(c, {{"-", "Rescan"}, {"L", "Picture"}}, {{"+", "Details"}, {"A", "Play"}});
     };
 
     Canvas c;
-    frame(c, 0, -1, 1, true, false, nullptr);
-    SavePng(c, out + "/library.png");
-    frame(c, 1, 0, 1, false, false, nullptr);
-    SavePng(c, out + "/library_rail.png");
-    frame(c, 0, -1, 0, true, true, "Found 0 games");
-    SavePng(c, out + "/empty.png");
+    home(c, 5, false, 0.6f);
+    SavePng(c, out + "/home.png");
+    home(c, 5, true, 0.0f);
+    SavePng(c, out + "/home_dock.png");
 
-    // Every system's wordmark, to review them side by side.
+    // Systems carousel.
     Skin::DrawBackdrop(c);
-    const char* ids[] = {"3ds", "ds", "gba", "gb", "nes", "snes", "n64", "vb", "ps1", "ps2", "psp",
-                         "md", "sms", "gg", "dc", "arcade", "pce", "ngp", "ws", "a2600", "lynx", "wiiu"};
-    for (int i = 0; i < 22; ++i) {
-        const int col = i % 6, row = i / 6;
-        Skin::DrawSystemMark(c, f, ids[i], 40 + col * 205, 40 + row * 170, 180, 140, 22);
-        const int w = regular.Measure(ids[i], 15);
-        regular.Draw(c, 40 + col * 205 + 90 - w / 2, 40 + row * 170 + 160, ids[i], 15, Skin::Palette::kColTextDim);
-    }
-    SavePng(c, out + "/marks.png");
+    Skin::TopBar bar{"Systems", "Pick a system to see its games", "03:02", "PM", 76, true};
+    Skin::DrawTopBar(c, f, bar);
+    const std::vector<Skin::SystemCard> cards = {
+        {"3ds", "3DS", red}, {"ds", "DS", MakeColor(0x3D, 0x7B, 0xFF)}, {"gba", "GBA", MakeColor(0x8B, 0x5C, 0xF6)},
+        {"gb", "GB", MakeColor(0x22, 0xC5, 0x5E)}, {"nes", "NES", MakeColor(0xE1, 0x3B, 0x3B)},
+    };
+    Skin::DrawSystemsCarousel(c, f, cards, 2.0f, 2, "Game Boy Advance", "12 games", "Ready", true);
+    Skin::DrawDock(c, f, dock, 1, 1, false);
+    hints(c, {{"Y", "Picture"}, {"X", "Default"}}, {{"A", "Games"}});
+    SavePng(c, out + "/systems.png");
+
+    // Empty library.
+    Skin::DrawBackdrop(c);
+    Skin::TopBar bar2{"gd_adv", "", "03:02", "PM", 12, false};
+    Skin::DrawTopBar(c, f, bar2);
+    Skin::DrawEmptyLibrary(c, f, "sdmc:/switch/dekopon/roms/");
+    Skin::DrawDock(c, f, dock, 0, 0, false);
+    Skin::DrawToast(c, f, "Found 0 games", false);
+    hints(c, {{"-", "Rescan"}}, {});
+    SavePng(c, out + "/empty.png");
     return 0;
 }
