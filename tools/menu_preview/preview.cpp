@@ -57,7 +57,7 @@ std::vector<u32> FakeAvatar() {
     return px;
 }
 
-Image LoadPng(const std::string& path) {
+Image LoadPng(const std::string& path, int longest = 320) {
     Image img;
     int w = 0, h = 0, n = 0;
     unsigned char* data = stbi_load(path.c_str(), &w, &h, &n, 4);
@@ -76,8 +76,8 @@ Image LoadPng(const std::string& path) {
             break;
         }
     }
-    // The app keeps pictures at most 320 pixels on a side.
-    const float k = std::min(1.0f, 320.0f / std::max(w, h));
+    // The app keeps pictures at most 320 pixels on a side (logos 560).
+    const float k = std::min(1.0f, float(longest) / std::max(w, h));
     if (k < 1.0f) {
         img = Resize(img, std::max(1, int(w * k + 0.5f)), std::max(1, int(h * k + 0.5f)));
     }
@@ -151,6 +151,14 @@ int main(int argc, char** argv) {
     mark.Init((fonts + "/Inter-BlackItalic.ttf").c_str());
     const Skin::Fonts f{&regular, &bold, &mark};
     Skin::SetAvatar(FakeAvatar(), 64, 64);
+    // The console logos EmuSwitch ships (the app loads them from romfs:/logos/) head Home's sections.
+    for (const char* id : {"3ds", "ds", "gba", "gb", "nes", "snes", "n64", "ps1", "ps2", "psp", "wiiu"}) {
+        Image logo = LoadPng(std::string{"src/citra_switch/assets/logos/"} + id + ".png", 560);
+        if (!logo.Empty()) {
+            logo.opaque = false;
+            Skin::SetSystemLogo(id, std::move(logo));
+        }
+    }
 
     const std::vector<Skin::DockItem> dock = {
         {"Home", Skin::DockIcon::Home},
@@ -362,14 +370,13 @@ int main(int argc, char** argv) {
     // Home scrolled down a little, and with a logo put in for the 3DS section.
     for (int i = 0; i < 6; ++i) Frame(c, 12.0, [&](Canvas& v) { home(v, 5, false, 1.3f, 1.0f, 1.0f, 150.0f); });
     SavePng(c, out + "/home_scrolled.png");
-    {
-        // The logo EmuSwitch ships for the 3DS section (the app loads it from the romfs).
-        Image img = LoadPng(std::string{argc > 4 ? argv[4] : "src/citra_switch/assets/logos/3ds.png"});
+    if (argc > 4) {
+        // A different 3DS logo to try out.
+        Image img = LoadPng(argv[4], 560);
         img.opaque = false;
         Skin::SetSystemLogo("3ds", std::move(img));
         for (int i = 0; i < 6; ++i) Frame(c, 12.5, [&](Canvas& v) { home(v, 5, false, 1.3f, 1.0f, 1.0f); });
         SavePng(c, out + "/home_logo.png");
-        Skin::SetSystemLogo("3ds", Image{});
     }
 
     // The + menu over the carousel, and a console being moved.
