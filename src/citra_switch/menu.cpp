@@ -2821,6 +2821,7 @@ private:
         int sel = 0;
         int scroll = 0;
         Repeater rep;
+        PickerPreview preview;
 
         auto Enter = [&](const std::string& next, const std::string& highlight) {
             dir = next;
@@ -2882,16 +2883,77 @@ private:
                 return dir;
             }
 
+            if (images_only) {
+                // Preview the highlighted picture once the cursor rests on it for a moment.
+                const bool on_file = sel - base >= dirs && sel - base - dirs < static_cast<int>(files.size());
+                const std::string path = on_file ? files[static_cast<std::size_t>(sel - base - dirs)].path : std::string{};
+                if (path != preview.path) {
+                    preview = PickerPreview{};
+                    preview.path = path;
+                    preview.since = NowSeconds();
+                }
+                if (!path.empty() && !preview.requested && NowSeconds() - preview.since > 0.12) {
+                    Art::RequestPreview(path);
+                    preview.requested = true;
+                }
+                if (preview.requested && !preview.ready) {
+                    preview.ready = Art::TakePreview(path, preview.img, preview.error);
+                }
+            }
+
             PrepareFrame();
-            RenderFrame([&](Canvas& c) { DrawBrowser(c, title, dir, entries, files, sel, scroll, pick_file); });
+            RenderFrame([&](Canvas& c) {
+                DrawBrowser(c, title, dir, entries, files, sel, scroll, pick_file, images_only ? &preview : nullptr);
+            });
         }
         return std::nullopt;
     }
 
+    // The picture picker's preview of the highlighted file.
+    struct PickerPreview {
+        std::string path;
+        Gfx::Image img;
+        std::string error;
+        bool requested = false;
+        bool ready = false;
+        double since = 0.0;
+    };
+
+    void DrawPickerPreview(Canvas& c, const PickerPreview& p, int x, int y, int w, int h) {
+        Skin::DrawPanel(c, x, y, w, h, 22);
+        const int inner = w - 40;
+        const int cx = x + w / 2, cy = y + 20 + inner / 2;
+        if (p.path.empty()) {
+            const char* msg = "Highlight a picture to preview it";
+            g_font.Draw(c, cx - g_font.Measure(msg, 17) / 2, cy, msg, 17, kColTextDim);
+        } else if (!p.ready) {
+            Skin::DrawSpinner(c, float(cx), float(cy), 16.0f, AnimTime());
+        } else if (!p.error.empty() || p.img.Empty()) {
+            const std::string msg = "Can't use this one: " + p.error;
+            const std::string shown = g_font.Truncate(msg, 16, inner);
+            g_font.Draw(c, cx - g_font.Measure(shown, 16) / 2, cy, shown, 16, kColError);
+        } else {
+            const float k = std::min(1.0f, std::min(float(inner) / p.img.w, float(inner) / p.img.h));
+            const float dw = p.img.w * k, dh = p.img.h * k;
+            c.SoftShadow(static_cast<int>(cx - dw / 2), static_cast<int>(cy - dh / 2), static_cast<int>(dw),
+                         static_cast<int>(dh), 14, 16, 6, 0x90);
+            c.DrawImageScaled(p.img, cx - dw / 2, cy - dh / 2, dw, dh, 14);
+        }
+        const std::size_t slash = p.path.find_last_of('/');
+        const std::string name = slash == std::string::npos ? p.path : p.path.substr(slash + 1);
+        if (!name.empty()) {
+            const std::string shown = g_font.Truncate(name, 17, inner);
+            g_font.Draw(c, cx - g_font.Measure(shown, 17) / 2, y + h - 22, shown, 17, kColText);
+        }
+    }
+
     void DrawBrowser(Canvas& c, const char* title, const std::string& dir,
                      const std::vector<DirEntry>& entries, const std::vector<FileEntry>& files,
-                     int sel, int scroll, bool pick_file) {
+                     int sel, int scroll, bool pick_file, const PickerPreview* preview) {
         Skin::DrawBackdrop(c);
+        // With a preview the list makes room for it on the right.
+        const bool show_preview = preview && g_screen_w > 900;
+        const int list_w = show_preview ? g_screen_w - 64 - 440 : g_screen_w - 64;
 
         const bool devices = dir.empty();
         g_font.Draw(c, 40, 44, devices ? "Select device" : title, 28, kColText);
@@ -2913,7 +2975,7 @@ private:
         for (int i = scroll; i < std::min(count, scroll + BrowseRows()); ++i) {
             const int y = kBrowseTop + (i - scroll) * kBrowseRowH;
             if (i == sel) {
-                Skin::DrawRow(c, 32, y, g_screen_w - 64, kBrowseRowH - 4, true);
+                Skin::DrawRow(c, 32, y, list_w, kBrowseRowH - 4, true);
             }
             const bool up = has_parent && i == 0;
             const bool is_dir = up || i - base < dirs;
@@ -2921,10 +2983,14 @@ private:
                                      : is_dir ? entries[i - base].name + "/"
                                               : files[i - base - dirs].name;
             g_font.Draw(c, 52, CenterBaseline(y, kBrowseRowH - 4, 20),
-                        g_font.Truncate(name, 20, g_screen_w - 128), 20,
+                        g_font.Truncate(name, 20, list_w - 64), 20,
                         up ? kColTextDim : kColText);
         }
-        DrawListScrollbar(c, g_screen_w - 20, kBrowseTop, BrowseRows(), kBrowseRowH, count, scroll);
+        DrawListScrollbar(c, 32 + list_w + 12, kBrowseTop, BrowseRows(), kBrowseRowH, count, scroll);
+        if (show_preview) {
+            const int pw = 400, px = g_screen_w - 40 - pw;
+            DrawPickerPreview(c, *preview, px, kBrowseTop, pw, std::min(pw + 44, ContentBottom() - kBrowseTop));
+        }
 
         int hx = 40;
         const int hy = g_screen_h - 44;
@@ -3234,6 +3300,8 @@ private:
     }
 
     void PrepareFrame() {
+        // Pictures finished loading in the background join between frames.
+        Art::Pump();
         const double now = NowSeconds();
         const float dt = frame_started ? static_cast<float>(std::clamp(now - g_now, 0.0, 0.1)) : 1.0f / 60.0f;
         frame_started = true;
@@ -4360,8 +4428,14 @@ MenuResult RunMenu(PadState& pad) {
         Art::LoadSystemArt();
         art_loaded = true;
     }
-    Menu menu;
-    return menu.Run(pad);
+    MenuResult result;
+    {
+        Menu menu;
+        result = menu.Run(pad);
+    }
+    // Whatever is still loading can wait: the game gets the cores.
+    Art::StopLoading();
+    return result;
 }
 
 void SetMenuNotice(const std::string& text, bool error) {

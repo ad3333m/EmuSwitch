@@ -5,10 +5,16 @@
 
 #include <algorithm>
 #include <cctype>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
+#include <dirent.h>
 #include <map>
+#include <mutex>
+#include <set>
 #include <sys/stat.h>
+#include <thread>
 
 #include "citra_switch/simplewebp.h"
 
@@ -16,14 +22,24 @@
 #include "citra_switch/menu_data.h"
 #include "citra_switch/menu_skin.h"
 #include "citra_switch/multi_system.h"
+#include "common/horizon_thread.h"
 
 namespace SwitchFrontend::Art {
 namespace {
 
 constexpr const char* kRoot = "sdmc:/switch/emuswitch";
 constexpr const char* kConfig = "sdmc:/switch/emuswitch/art.ini";
-constexpr int kMaxSide = 256; // pictures are shown at most ~140px; this keeps memory small
 constexpr const char* kExts[] = {"png", "webp", "jpg", "jpeg"};
+
+// How big pictures are kept: the short side covers the largest size they're drawn at (a
+// focused tile, a system card) with some room for a sharp resize, the long side is capped.
+struct Fit {
+    int cover;
+    int longest;
+};
+constexpr Fit kGameFit{176, 300};
+constexpr Fit kSystemFit{232, 360};
+constexpr int kPreviewSide = 360;
 
 // "system" -> id -> path and "game" -> rom path -> path.
 std::map<std::string, std::string> s_system_paths;
@@ -38,6 +54,16 @@ std::string Lower(std::string s) {
 bool Exists(const std::string& p) {
     struct stat st;
     return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+// Identifies a file's current contents cheaply: its path, size and modification time.
+std::string Stamp(const std::string& p) {
+    struct stat st;
+    if (p.empty() || stat(p.c_str(), &st) != 0) {
+        return p;
+    }
+    return p + "|" + std::to_string(static_cast<long long>(st.st_size)) + "|" +
+           std::to_string(static_cast<long long>(st.st_mtime));
 }
 
 std::string Stem(const std::string& path) {
@@ -83,9 +109,72 @@ std::string DropIn(const std::string& dir, const std::string& stem) {
     return "";
 }
 
-// Box-filters RGBA down so the longer side is at most kMaxSide.
-void Shrink(std::vector<std::uint8_t>& rgba, int& w, int& h) {
-    const int factor = (std::max(w, h) + kMaxSide - 1) / kMaxSide;
+// The covers folder, listed once: lower-case stem -> file. Saves a handful of file checks per
+// game on every rescan.
+std::map<std::string, std::string> ListCovers() {
+    std::map<std::string, std::string> out;
+    const std::string dir = std::string(kRoot) + "/covers";
+    DIR* d = opendir(dir.c_str());
+    if (!d) return out;
+    std::map<std::string, int> rank;
+    while (const dirent* e = readdir(d)) {
+        const std::string name = e->d_name;
+        const size_t dot = name.rfind('.');
+        if (dot == std::string::npos) continue;
+        const std::string ext = Lower(name.substr(dot + 1));
+        int r = -1;
+        for (int i = 0; i < 4; ++i) {
+            if (ext == kExts[i]) r = i;
+        }
+        if (r < 0) continue;
+        const std::string stem = Lower(name.substr(0, dot));
+        auto it = rank.find(stem);
+        if (it == rank.end() || r < it->second) {
+            rank[stem] = r;
+            out[stem] = dir + "/" + name;
+        }
+    }
+    closedir(d);
+    return out;
+}
+
+std::string GamePathWith(const GameEntry& game, const std::map<std::string, std::string>* covers) {
+    ReadConfig();
+    const auto it = s_game_paths.find(game.path);
+    if (it != s_game_paths.end() && Exists(it->second)) return it->second;
+    if (covers) {
+        if (auto c = covers->find(Lower(Stem(game.path))); c != covers->end()) return c->second;
+        if (!game.title.empty()) {
+            if (auto c = covers->find(Lower(game.title)); c != covers->end()) return c->second;
+        }
+        return "";
+    }
+    std::string p = DropIn("covers", Stem(game.path));
+    if (p.empty() && !game.title.empty()) p = DropIn("covers", game.title);
+    return p;
+}
+
+// ---- decoding ----
+
+enum class Format { Png, Jpeg, WebP, Unknown };
+
+// Reads the format from the file's first bytes: pictures saved from the web are often WebP
+// whatever their name says.
+Format Sniff(const std::string& path) {
+    unsigned char head[16] = {};
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return Format::Unknown;
+    const size_t n = fread(head, 1, sizeof(head), f);
+    fclose(f);
+    if (n >= 8 && head[0] == 0x89 && head[1] == 'P' && head[2] == 'N' && head[3] == 'G') return Format::Png;
+    if (n >= 3 && head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF) return Format::Jpeg;
+    if (n >= 12 && std::memcmp(head, "RIFF", 4) == 0 && std::memcmp(head + 8, "WEBP", 4) == 0) return Format::WebP;
+    return Format::Unknown;
+}
+
+// Box-averages RGBA down by a whole factor: a cheap first step for very large pictures
+// before the careful resize.
+void BoxShrink(std::vector<std::uint8_t>& rgba, int& w, int& h, int factor) {
     if (factor <= 1) return;
     const int nw = std::max(1, w / factor), nh = std::max(1, h / factor);
     std::vector<std::uint8_t> out(std::size_t(nw) * nh * 4);
@@ -105,9 +194,25 @@ void Shrink(std::vector<std::uint8_t>& rgba, int& w, int& h) {
     h = nh;
 }
 
-std::string Decode(const std::string& path, std::vector<Gfx::u32>& px, int& w, int& h) {
+// Decodes `path` and scales it so its short side covers `fit.cover` (never enlarging) and its
+// long side stays within `fit.longest`. `contain` instead fits the whole picture in a square
+// of `fit.longest`.
+std::string Decode(const std::string& path, Fit fit, bool contain, Gfx::Image& out) {
     std::vector<std::uint8_t> rgba;
-    if (Lower(path).size() > 5 && Lower(path).rfind(".webp") == path.size() - 5) {
+    int w = 0, h = 0;
+    switch (Sniff(path)) {
+    case Format::Png:
+    case Format::Jpeg: {
+        DecodedImage img;
+        const int cover = contain ? fit.longest : fit.cover;
+        const std::string err = DecodeImageFile(path, cover, cover, img);
+        if (!err.empty()) return err;
+        rgba = std::move(img.rgba);
+        w = img.width;
+        h = img.height;
+        break;
+    }
+    case Format::WebP: {
         FILE* f = fopen(path.c_str(), "rb");
         if (!f) return "the file could not be read";
         fseek(f, 0, SEEK_END);
@@ -132,44 +237,108 @@ std::string Decode(const std::string& path, std::vector<Gfx::u32>& px, int& w, i
         if (err != SIMPLEWEBP_NO_ERROR) return "the WebP could not be decoded";
         w = int(ww);
         h = int(hh);
-    } else {
-        DecodedImage img;
-        const std::string err = DecodeImageFile(path, kMaxSide, kMaxSide, img);
-        if (!err.empty()) return err;
-        rgba = std::move(img.rgba);
-        w = img.width;
-        h = img.height;
+        break;
     }
-    Shrink(rgba, w, h);
-    px.resize(std::size_t(w) * h);
-    std::memcpy(px.data(), rgba.data(), px.size() * 4);
+    case Format::Unknown:
+        return Exists(path) ? "it isn't a PNG, JPEG or WebP picture" : "the file could not be read";
+    }
+    if (w <= 0 || h <= 0 || rgba.size() < std::size_t(w) * h * 4) return "the picture has no pixels";
+
+    // The target size.
+    float k = 1.0f;
+    if (contain) {
+        k = std::min(1.0f, float(fit.longest) / float(std::max(w, h)));
+    } else {
+        k = std::min(1.0f, float(fit.cover) / float(std::min(w, h)));
+        k = std::min(k, float(fit.longest) / float(std::max(w, h)));
+    }
+    const int tw = std::max(1, int(w * k + 0.5f)), th = std::max(1, int(h * k + 0.5f));
+    // Whole-factor box steps down to about twice the target, then Lanczos for the rest.
+    BoxShrink(rgba, w, h, std::max(1, std::min(w / std::max(1, tw * 2), h / std::max(1, th * 2))));
+
+    Gfx::Image img;
+    img.w = w;
+    img.h = h;
+    img.px.resize(std::size_t(w) * h);
+    std::memcpy(img.px.data(), rgba.data(), img.px.size() * 4);
+    img.opaque = std::all_of(img.px.begin(), img.px.end(), [](Gfx::u32 p) { return (p >> 24) == 0xFF; });
+    out = (w == tw && h == th) ? std::move(img) : Gfx::Resize(img, tw, th);
     return "";
 }
 
 std::string ApplySystem(const std::string& id) {
     const std::string path = SystemArtPath(id);
     if (path.empty()) {
-        Skin::SetSystemImage(id, {}, 0, 0);
+        Skin::SetSystemImage(id, Gfx::Image{});
         return "";
     }
-    std::vector<Gfx::u32> px;
-    int w = 0, h = 0;
-    const std::string err = Decode(path, px, w, h);
-    Skin::SetSystemImage(id, err.empty() ? std::move(px) : std::vector<Gfx::u32>{}, w, h);
+    Gfx::Image img;
+    const std::string err = Decode(path, kSystemFit, false, img);
+    Skin::SetSystemImage(id, err.empty() ? std::move(img) : Gfx::Image{});
     return err;
 }
 
-std::string ApplyGame(const GameEntry& game) {
-    const std::string path = GameArtPath(game);
-    if (path.empty()) {
-        Skin::SetGameImage(game.path, {}, 0, 0);
-        return "";
+// ---- the background loader ----
+
+struct Job {
+    bool preview = false;
+    std::string key;   // rom path (games) or file (previews)
+    std::string path;  // the picture
+    std::string stamp;
+};
+struct Done {
+    Job job;
+    Gfx::Image img;
+    std::string error;
+};
+
+std::mutex g_mutex;
+std::condition_variable g_wake;
+std::deque<Job> g_queue;
+std::vector<Done> g_done;
+std::thread g_thread;
+bool g_stop = false;
+// Game pictures in the skin (rom path -> stamp) and the ones on their way.
+std::map<std::string, std::string> g_applied;
+std::set<std::string> g_pending;
+// The picker's latest preview.
+std::string g_preview_want;
+bool g_preview_ready = false;
+Done g_preview;
+
+void Loader() {
+    // Core 2 is idle between frames; the menu's own thread keeps core 0.
+    Common::Horizon::PinCurrentThread(2);
+    while (true) {
+        Job job;
+        {
+            std::unique_lock lock{g_mutex};
+            g_wake.wait(lock, [] { return g_stop || !g_queue.empty(); });
+            if (g_stop) return;
+            job = std::move(g_queue.front());
+            g_queue.pop_front();
+            if (job.preview && job.key != g_preview_want) continue; // the picker moved on
+        }
+        Done done;
+        done.error = Decode(job.path, job.preview ? Fit{kPreviewSide, kPreviewSide} : kGameFit, job.preview, done.img);
+        done.job = std::move(job);
+        std::lock_guard lock{g_mutex};
+        if (done.job.preview) {
+            if (done.job.key == g_preview_want) {
+                g_preview = std::move(done);
+                g_preview_ready = true;
+            }
+        } else {
+            g_done.push_back(std::move(done));
+        }
     }
-    std::vector<Gfx::u32> px;
-    int w = 0, h = 0;
-    const std::string err = Decode(path, px, w, h);
-    Skin::SetGameImage(game.path, err.empty() ? std::move(px) : std::vector<Gfx::u32>{}, w, h);
-    return err;
+}
+
+void EnsureLoader() {
+    if (!g_thread.joinable()) {
+        g_stop = false;
+        g_thread = std::thread(Loader);
+    }
 }
 
 } // namespace
@@ -201,12 +370,7 @@ std::string SystemArtPath(const std::string& id) {
 }
 
 std::string GameArtPath(const GameEntry& game) {
-    ReadConfig();
-    const auto it = s_game_paths.find(game.path);
-    if (it != s_game_paths.end() && Exists(it->second)) return it->second;
-    std::string p = DropIn("covers", Stem(game.path));
-    if (p.empty() && !game.title.empty()) p = DropIn("covers", game.title);
-    return p;
+    return GamePathWith(game, nullptr);
 }
 
 std::string LoadProfile() {
@@ -240,7 +404,7 @@ std::string LoadProfile() {
                     const bool ok = fwrite(jpg.data(), 1, real, f) == real;
                     fclose(f);
                     DecodedImage img;
-                    if (ok && DecodeImageFile(path, 96, 96, img).empty() && img.width > 0) {
+                    if (ok && DecodeImageFile(path, 128, 128, img).empty() && img.width > 0) {
                         std::vector<Gfx::u32> px(std::size_t(img.width) * img.height);
                         std::memcpy(px.data(), img.rgba.data(), px.size() * 4);
                         Skin::SetAvatar(std::move(px), img.width, img.height);
@@ -260,7 +424,62 @@ void LoadSystemArt() {
 }
 
 void LoadGameArt(const std::vector<GameEntry>& games) {
-    for (const GameEntry& g : games) ApplyGame(g);
+    const auto covers = ListCovers();
+    std::vector<Job> jobs;
+    for (const GameEntry& g : games) {
+        const std::string path = GamePathWith(g, &covers);
+        const std::string stamp = Stamp(path);
+        std::lock_guard lock{g_mutex};
+        const auto it = g_applied.find(g.path);
+        if ((it != g_applied.end() && it->second == stamp) || g_pending.count(g.path + "\n" + stamp)) {
+            continue;
+        }
+        if (path.empty()) {
+            // Nothing (any more): back to the icon or initials.
+            Skin::SetGameImage(g.path, Gfx::Image{});
+            g_applied[g.path] = stamp;
+            continue;
+        }
+        g_pending.insert(g.path + "\n" + stamp);
+        jobs.push_back({false, g.path, path, stamp});
+    }
+    if (jobs.empty()) return;
+    std::lock_guard lock{g_mutex};
+    for (Job& j : jobs) g_queue.push_back(std::move(j));
+    EnsureLoader();
+    g_wake.notify_all();
+}
+
+bool Pump() {
+    std::vector<Done> done;
+    {
+        std::lock_guard lock{g_mutex};
+        done.swap(g_done);
+    }
+    for (Done& d : done) {
+        Skin::SetGameImage(d.job.key, d.error.empty() ? std::move(d.img) : Gfx::Image{});
+        std::lock_guard lock{g_mutex};
+        g_applied[d.job.key] = d.job.stamp;
+        g_pending.erase(d.job.key + "\n" + d.job.stamp);
+    }
+    return !done.empty();
+}
+
+void StopLoading() {
+    {
+        std::lock_guard lock{g_mutex};
+        if (!g_thread.joinable()) return;
+        g_stop = true;
+        g_queue.clear();
+    }
+    g_wake.notify_all();
+    g_thread.join();
+    std::lock_guard lock{g_mutex};
+    // Finished work is still good; unfinished work is asked for again by the next rescan.
+    g_pending.clear();
+    for (const Done& d : g_done) g_pending.insert(d.job.key + "\n" + d.job.stamp);
+    g_preview_want.clear();
+    g_preview_ready = false;
 }
 
 std::string SetSystemArt(const std::string& id, const std::string& image_path) {
@@ -279,16 +498,47 @@ std::string SetSystemArt(const std::string& id, const std::string& image_path) {
 
 std::string SetGameArt(const GameEntry& game, const std::string& image_path) {
     ReadConfig();
+    const std::string before = s_game_paths.count(game.path) ? s_game_paths[game.path] : std::string{};
     if (image_path.empty()) s_game_paths.erase(game.path);
     else s_game_paths[game.path] = image_path;
-    const std::string err = ApplyGame(game);
+    const std::string path = GameArtPath(game);
+    Gfx::Image img;
+    std::string err;
+    if (!path.empty()) {
+        err = Decode(path, kGameFit, false, img);
+    }
     if (!err.empty() && !image_path.empty()) {
-        s_game_paths.erase(game.path);
-        ApplyGame(game);
+        // Keep whatever was there before.
+        if (before.empty()) s_game_paths.erase(game.path);
+        else s_game_paths[game.path] = before;
         return err;
+    }
+    Skin::SetGameImage(game.path, std::move(img));
+    {
+        std::lock_guard lock{g_mutex};
+        g_applied[game.path] = Stamp(path);
     }
     WriteConfig();
     return "";
+}
+
+void RequestPreview(const std::string& path) {
+    std::lock_guard lock{g_mutex};
+    if (g_preview_want == path) return;
+    g_preview_want = path;
+    g_preview_ready = false;
+    // Ahead of any game pictures still loading: the picker is what the user is looking at.
+    g_queue.push_front({true, path, path, ""});
+    EnsureLoader();
+    g_wake.notify_all();
+}
+
+bool TakePreview(const std::string& path, Gfx::Image& img, std::string& error) {
+    std::lock_guard lock{g_mutex};
+    if (!g_preview_ready || g_preview.job.key != path) return false;
+    img = g_preview.img;
+    error = g_preview.error;
+    return true;
 }
 
 } // namespace SwitchFrontend::Art
