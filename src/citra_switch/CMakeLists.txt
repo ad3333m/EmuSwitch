@@ -71,6 +71,9 @@ endif()
 # oaknut_horizon_jit is pulled in transitively via oaknut
 target_link_libraries(citra_switch PRIVATE citra_core citra_common inih usbhsfs)
 
+# simplewebp is third-party C: the project-wide C++-only flags would trip -Werror on it.
+set_source_files_properties(simplewebp_impl.c PROPERTIES COMPILE_OPTIONS "-Wno-error;-w")
+
 if (ENABLE_LSFG)
     target_link_libraries(citra_switch PRIVATE vulkan-headers)
 endif()
