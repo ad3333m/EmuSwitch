@@ -15,6 +15,7 @@
 
 #include "citra_switch/config.h"
 #include "citra_switch/menu_data.h"
+#include "citra_switch/multi_system.h"
 #include "common/file_derived.h"
 #include "common/file_util.h"
 #include "common/logging/log.h"
@@ -528,6 +529,12 @@ std::vector<GameEntry> ScanGames() {
         ScanDirectory(paths.roms_dir_2, games, 0, paths.scan_recursive);
     }
     ScanInstalled(games);
+    // EmuSwitch: 3DS games in sdmc:/roms/3ds too, and every other system's games.
+    const std::string shared_3ds = "sdmc:/roms/3ds/";
+    if (shared_3ds != paths.roms_dir && shared_3ds != paths.roms_dir_2 && FileUtil::IsDirectory(shared_3ds)) {
+        ScanDirectory(shared_3ds, games, 0, true);
+    }
+    Multi::AddGames(games);
 
     std::sort(games.begin(), games.end(), [](const GameEntry& a, const GameEntry& b) {
         return Common::ToLower(a.title) < Common::ToLower(b.title);

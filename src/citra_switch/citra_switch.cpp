@@ -14,6 +14,7 @@
 #include "citra_switch/config.h"
 #include "citra_switch/input.h"
 #include "citra_switch/menu.h"
+#include "citra_switch/multi_system.h"
 #include "citra_switch/overlay_menu.h"
 #include "citra_switch/usb_storage.h"
 #include "common/horizon_thread.h"
@@ -347,6 +348,8 @@ int main(int argc, char* argv[]) {
 
     // Resolve SD-card dirs and create folders/files if not present
     const int launch_count = SwitchFrontend::Bootstrap();
+    // EmuSwitch: unpack the other systems' emulators and set up PS2 in the background.
+    SwitchFrontend::Multi::StartSetup();
     std::printf("FS & logging up (launch #%d). Logs are located at sdmc:/switch/dekopon/log/\n",
                 launch_count);
 
@@ -373,7 +376,14 @@ int main(int argc, char* argv[]) {
             rom = choice.path;
         }
 
-        if (!rom.empty()) {
+        if (!rom.empty() && SwitchFrontend::Multi::SystemForPath(rom) >= 0) {
+            // Another system's game: hand it to its emulator, which starts once we exit.
+            std::string error;
+            if (SwitchFrontend::Multi::Launch(rom, error)) {
+                break;
+            }
+            SwitchFrontend::SetMenuNotice(error);
+        } else if (!rom.empty()) {
             RunGame(pad, rom);
         }
     }
@@ -383,6 +393,7 @@ int main(int argc, char* argv[]) {
     StopSixAxis();
     SwitchFrontend::Shutdown();
     Common::StopAllThreadWorkers();
+    SwitchFrontend::Multi::FinishSetup();
     SwitchFrontend::ShutdownUsbStorage();
     if (have_romfs) {
         romfsExit();

@@ -41,13 +41,31 @@ ln -sfn "$ROOT/externals/nxvk/switch" /work/switch
 make -C externals/nxvk driver CONTAINER=
 test -f externals/nxvk/switch/build/cross/src/nouveau/vulkan/libnvk.a
 
-# 4. Dekopon itself.
+# 4. EmuSwitch's other emulators, bundled in the romfs as emus/<system>.nro.
+EMUS="$ROOT/dist/emuswitch-romfs/emus"
+rm -rf "$ROOT/dist/emuswitch-romfs"
+mkdir -p "$EMUS"
+fetch() { curl -fL --retry 4 -o "$2" "$1"; }
+fetch https://github.com/PalindromicBreadLoaf/ARMSX2-NX/releases/download/v3.0.0/armsx2nx.nro "$EMUS/ps2.nro"
+fetch https://github.com/NaGaa95/Cemu-nx/releases/download/1.2.0/cemu.nro "$EMUS/wiiu.nro"
+core() {
+    fetch "https://buildbot.libretro.com/nightly/nintendo/switch/libnx/latest/$1_libretro_libnx.nro.zip" /tmp/core.zip
+    python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extract(sys.argv[2], '/tmp')" /tmp/core.zip "$1_libretro_libnx.nro"
+    mv "/tmp/$1_libretro_libnx.nro" "$EMUS/$2.nro"
+}
+core desmume ds
+core mgba gba
+core gambatte gb
+ls -la "$EMUS"
+
+# 5. EmuSwitch itself (Dekopon's frontend running the 3DS engine in-process).
 cmake -S . -B build/switch \
     -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DEMUSWITCH_ROMFS="$ROOT/dist/emuswitch-romfs"
 cmake --build build/switch --target citra_switch_nro -j"$JOBS"
 
 mkdir -p "$ROOT/artifacts"
-cp build/switch/src/citra_switch/dekopon.nro "$ROOT/artifacts/"
+cp build/switch/src/citra_switch/dekopon.nro "$ROOT/artifacts/EmuSwitch.nro"
 ls -la "$ROOT/artifacts"

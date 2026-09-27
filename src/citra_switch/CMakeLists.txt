@@ -36,6 +36,10 @@ add_executable(citra_switch
     menu.cpp
     menu.h
     menu_data.cpp
+    multi_system.cpp
+    multi_system.h
+    emu_zip.cpp
+    emu_zip.h
     menu_data.h
     overlay_menu.cpp
     overlay_menu.h
@@ -107,8 +111,8 @@ if (ENABLE_VULKAN)
 endif()
 
 nx_generate_nacp(OUTPUT dekopon.nacp
-    NAME "Dekopon"
-    AUTHOR "Azahar Team \& PalindromicBreadLoaf"
+    NAME "EmuSwitch"
+    AUTHOR "Adam (3DS engine: Azahar Team \& PalindromicBreadLoaf)"
     VERSION "${DEKOPON_VERSION}"
 )
 
@@ -155,9 +159,21 @@ if (ENABLE_DEKO3D)
         ROMFS dekopon_romfs
     )
 else()
-    nx_create_nro(citra_switch
-        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/dekopon.nro"
-        NACP "${CMAKE_CURRENT_BINARY_DIR}/dekopon.nacp"
-        ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.jpg"
-    )
+    # EmuSwitch: the other systems' emulators ride in the romfs (romfs:/emus/<id>.nro).
+    # CI fills EMUSWITCH_ROMFS before configuring; without it the build is 3DS-only.
+    set(EMUSWITCH_ROMFS "${CMAKE_SOURCE_DIR}/dist/emuswitch-romfs" CACHE PATH "EmuSwitch romfs directory")
+    if (EXISTS "${EMUSWITCH_ROMFS}/emus")
+        nx_create_nro(citra_switch
+            OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/dekopon.nro"
+            NACP "${CMAKE_CURRENT_BINARY_DIR}/dekopon.nacp"
+            ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.jpg"
+            ROMFS "${EMUSWITCH_ROMFS}"
+        )
+    else()
+        nx_create_nro(citra_switch
+            OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/dekopon.nro"
+            NACP "${CMAKE_CURRENT_BINARY_DIR}/dekopon.nacp"
+            ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.jpg"
+        )
+    endif()
 endif()

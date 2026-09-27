@@ -602,7 +602,8 @@ struct Values {
                                                              Keys::delay_game_render_thread_us};
     SwitchableSetting<bool> simulate_3ds_gpu_timings{false, Keys::simulate_3ds_gpu_timings};
 
-    SwitchableSetting<LayoutOption> layout_option{LayoutOption::Default, Keys::layout_option};
+    // EmuSwitch: the top screen fills the display with the bottom one small in the top right.
+    SwitchableSetting<LayoutOption> layout_option{LayoutOption::OverlayScreen, Keys::layout_option};
     SwitchableSetting<bool> swap_screen{false, Keys::swap_screen};
     SwitchableSetting<bool> upright_screen{false, Keys::upright_screen};
     SwitchableSetting<bool> upright_screen_flipped{false, Keys::upright_screen_flipped};
@@ -619,10 +620,10 @@ struct Values {
     SwitchableSetting<float, true> large_screen_proportion{4.f, 1.f, 16.f,
                                                            Keys::large_screen_proportion};
     SwitchableSetting<int> screen_gap{0, Keys::screen_gap};
-    SwitchableSetting<SmallScreenPosition> small_screen_position{SmallScreenPosition::BottomRight,
+    SwitchableSetting<SmallScreenPosition> small_screen_position{SmallScreenPosition::TopRight,
                                                                  Keys::small_screen_position};
     SwitchableSetting<SmallScreenPosition> overlay_screen_position{
-        SmallScreenPosition::BottomRight, Keys::overlay_screen_position};
+        SmallScreenPosition::TopRight, Keys::overlay_screen_position};
     SwitchableSetting<u16, true> overlay_screen_size{25, 10, 60, Keys::overlay_screen_size};
     SwitchableSetting<u16, true> overlay_screen_opacity{100, 10, 100,
                                                         Keys::overlay_screen_opacity};

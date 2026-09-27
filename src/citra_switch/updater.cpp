@@ -32,8 +32,8 @@ namespace SwitchFrontend {
 namespace {
 
 constexpr std::string_view kReleasesApi =
-    "https://api.github.com/repos/PalindromicBreadLoaf/dekopon/releases?per_page=20";
-constexpr std::string_view kUserAgent = "Dekopon-Updater/" DEKOPON_VERSION;
+    "https://api.github.com/repos/ad3333m/dekopon/releases?per_page=20";
+constexpr std::string_view kUserAgent = "EmuSwitch-Updater/" DEKOPON_VERSION;
 constexpr long kConnectTimeoutSeconds = 15;
 constexpr long kRequestTimeoutSeconds = 30;
 constexpr std::uint32_t kNroMagic = 0x304F524E;
@@ -296,7 +296,7 @@ std::optional<UpdateRelease> ParseRelease(const nlohmann::json& release) try {
         return std::nullopt;
     }
     for (const auto& asset : *assets_it) {
-        if (!asset.is_object() || asset.value("name", "") != "dekopon.nro") {
+        if (!asset.is_object() || asset.value("name", "") != "EmuSwitch.nro") {
             continue;
         }
         out.download_url = asset.value("browser_download_url", "");

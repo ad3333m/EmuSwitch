@@ -33,17 +33,17 @@ jobs:
         run: docker run --rm -e LIBNX_REF="${{ inputs.libnx_ref || 'master' }}" -v "$PWD:/work" -w /work nxvk bash .ci/switch-nro.sh
       - uses: actions/upload-artifact@v7
         with:
-          name: dekopon-nro
-          path: artifacts/dekopon.nro
+          name: EmuSwitch
+          path: artifacts/EmuSwitch.nro
       - name: Publish nightly
         if: github.ref == 'refs/heads/master'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view nightly --repo "${{ github.repository }}" >/dev/null 2>&1 ||             gh release create nightly --repo "${{ github.repository }}" --prerelease --title "Nightly"               --notes "Latest master build, rebuilt against libnx master for HOS 22.5.0."
-          gh release upload nightly artifacts/dekopon.nro --clobber --repo "${{ github.repository }}"
+          gh release upload nightly artifacts/EmuSwitch.nro --clobber --repo "${{ github.repository }}"
       - name: Publish release
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" artifacts/dekopon.nro --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --notes "Rebuilt against libnx master and the latest devkitA64 for HOS 22.5.0 / Atmosphère 1.11.2."
+        run: gh release create "${{ github.ref_name }}" artifacts/EmuSwitch.nro --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --notes "Rebuilt against libnx master and the latest devkitA64 for HOS 22.5.0 / Atmosphère 1.11.2."
