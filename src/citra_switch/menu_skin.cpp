@@ -4,10 +4,16 @@
 #include "citra_switch/menu_skin.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cctype>
 #include <cmath>
+#include <cstring>
+#include <mutex>
 #include <unordered_map>
 #include <utility>
+
+#include "citra_switch/menu_skin_art.h"
 
 namespace SwitchFrontend::Skin {
 namespace {
@@ -15,196 +21,366 @@ namespace {
 using namespace Palette;
 using namespace Layout;
 using Gfx::CenterBaseline;
-using Pt = std::pair<float, float>;
+using Gfx::WithAlpha;
+using Shapes::DockIconShape;
+using u64 = std::uint64_t;
 
-u32 Alpha(u32 color, u8 a) {
-    return (color & 0x00FFFFFFu) | (u32{a} << 24);
+constexpr u32 kWhite = MakeColor(0xFF, 0xFF, 0xFF);
+constexpr u32 kBlack = MakeColor(0, 0, 0);
+
+u32 White(u8 a) {
+    return WithAlpha(kWhite, a);
+}
+u32 Black(u8 a) {
+    return WithAlpha(kBlack, a);
+}
+u8 A(float a) {
+    return static_cast<u8>(std::clamp(a, 0.0f, 1.0f) * 255.0f + 0.5f);
 }
 
-// Teal -> blue -> pink, the focus ring's colours; `phase` slowly turns it.
+// Teal -> violet -> pink, the focus ring's colours; `phase` slowly turns it.
 u32 RingAt(float t, float phase = 0.0f) {
-    t = std::fmod(t + phase, 1.0f);
-    const u32 a = MakeColor(0x40, 0xE2, 0xD6), b = MakeColor(0x78, 0x78, 0xFF), c = MakeColor(0xEC, 0x68, 0xD6);
+    t = t + phase;
+    t -= std::floor(t);
+    const u32 a = MakeColor(0x5E, 0xE7, 0xDF), b = MakeColor(0x8B, 0x7C, 0xFF), c = MakeColor(0xF0, 0x7C, 0xD8);
     if (t < 0.4f) return Canvas::Mix(a, b, t / 0.4f);
     if (t < 0.8f) return Canvas::Mix(b, c, (t - 0.4f) / 0.4f);
     return Canvas::Mix(c, a, (t - 0.8f) / 0.2f);
 }
 
-// ---- vector shapes via distance fields -------------------------------------------------
+// ---- frame state ------------------------------------------------------------------------------
 
-float SegDist(float px, float py, float ax, float ay, float bx, float by) {
-    const float dx = bx - ax, dy = by - ay;
-    const float l2 = dx * dx + dy * dy;
-    const float t = l2 > 0 ? std::clamp(((px - ax) * dx + (py - ay) * dy) / l2, 0.0f, 1.0f) : 0.0f;
-    const float qx = ax + t * dx - px, qy = ay + t * dy - py;
-    return std::sqrt(qx * qx + qy * qy);
+double g_now = 0.0;
+double g_last_now = -1.0;
+std::atomic<bool> g_may_build{true};
+std::atomic<int> g_budget{1 << 20};
+std::atomic<std::uint64_t> g_frame{0};
+int g_screen_w = Gfx::kPanelW;
+int g_screen_h = Gfx::kPanelH;
+
+bool MayBuild() {
+    return g_may_build.load(std::memory_order_relaxed);
 }
 
-// A polyline with round caps and joins, anti-aliased.
-void Stroke(Canvas& c, const std::vector<Pt>& pts, float width, u32 color, bool closed = false) {
-    if (pts.empty()) return;
-    float x0 = pts[0].first, x1 = x0, y0 = pts[0].second, y1 = y0;
-    for (const Pt& p : pts) {
-        x0 = std::min(x0, p.first); x1 = std::max(x1, p.first);
-        y0 = std::min(y0, p.second); y1 = std::max(y1, p.second);
+// Takes one unit of this frame's building budget, so a page of new pictures is spread over a
+// few frames instead of stalling one.
+bool TakeBudget() {
+    if (!MayBuild()) {
+        return false;
     }
-    const float pad = width / 2 + 2;
-    const std::size_t n = pts.size();
-    for (int y = int(std::floor(y0 - pad)); y <= int(std::ceil(y1 + pad)); ++y) {
-        for (int x = int(std::floor(x0 - pad)); x <= int(std::ceil(x1 + pad)); ++x) {
-            const float px = x + 0.5f, py = y + 0.5f;
-            float d = 1e9f;
-            if (n == 1) {
-                d = SegDist(px, py, pts[0].first, pts[0].second, pts[0].first, pts[0].second);
+    return g_budget.fetch_sub(1, std::memory_order_relaxed) > 0;
+}
+
+// ---- backdrop: a slow field of coloured light, computed at 1/8 size and filtered up ----
+
+float g_amb[3] = {60, 90, 160};
+u32 g_amb_target = MakeColor(60, 90, 160);
+
+struct Spot {
+    float x = 0, y = 0, radius = 1;
+    float col[3] = {0, 0, 0};
+    u32 target_col = 0;
+    float strength = 0, target = 0;
+} g_spot;
+
+struct Field {
+    int w = 0, h = 0, lw = 0, lh = 0;
+    std::vector<int> v; // 3 ints per sample, value * 256
+} g_field;
+
+const std::array<u8, 64 * 64>& Noise() {
+    static const std::array<u8, 64 * 64> table = [] {
+        std::array<u8, 64 * 64> t{};
+        std::uint32_t s = 0x9E3779B9u;
+        for (u8& v : t) {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            v = static_cast<u8>(s >> 24);
+        }
+        return t;
+    }();
+    return table;
+}
+
+void BuildField(double t) {
+    Field& F = g_field;
+    F.w = g_screen_w;
+    F.h = g_screen_h;
+    F.lw = F.w / 8 + 2;
+    F.lh = F.h / 8 + 2;
+    F.v.resize(static_cast<std::size_t>(F.lw) * F.lh * 3);
+    const float ft = static_cast<float>(t);
+    struct Blob {
+        float cx, cy, rx, ry, r, g, b, k;
+    };
+    const Blob blobs[] = {
+        {0.16f + 0.05f * std::sin(ft * 0.23f), 0.06f + 0.06f * std::cos(ft * 0.19f), 0.78f, 0.95f, g_amb[0], g_amb[1],
+         g_amb[2], 0.34f},
+        {0.88f + 0.04f * std::cos(ft * 0.17f), 0.95f + 0.05f * std::sin(ft * 0.21f), 0.72f, 0.85f, 118, 64, 214, 0.22f},
+        {0.56f + 0.12f * std::sin(ft * 0.11f), 0.52f + 0.08f * std::cos(ft * 0.13f), 0.5f, 0.6f, 24, 120, 150, 0.07f},
+    };
+    const Spot& sp = g_spot;
+    const float spot_k = sp.strength * 0.55f;
+    const float inv_r2 = 1.0f / std::max(1.0f, sp.radius * sp.radius);
+    for (int j = 0; j < F.lh; ++j) {
+        const float fy = std::min(1.0f, (j * 8.0f) / F.h);
+        for (int i = 0; i < F.lw; ++i) {
+            const float fx = std::min(1.0f, (i * 8.0f) / F.w);
+            float r = 9 - 5 * fy, g = 10 - 5 * fy, b = 16 - 8 * fy;
+            for (const Blob& bl : blobs) {
+                const float dx = (fx - bl.cx) / bl.rx, dy = (fy - bl.cy) / bl.ry;
+                float f = std::max(0.0f, 1.0f - (dx * dx + dy * dy));
+                f = f * f * bl.k;
+                r += bl.r * f;
+                g += bl.g * f;
+                b += bl.b * f;
             }
-            for (std::size_t i = 0; i + (closed ? 0 : 1) < n; ++i) {
-                const Pt& a = pts[i];
-                const Pt& b = pts[(i + 1) % n];
-                d = std::min(d, SegDist(px, py, a.first, a.second, b.first, b.second));
+            if (spot_k > 0.001f) {
+                // Squashed vertically: a pool on the floor rather than a ball.
+                const float dx = i * 8.0f - sp.x, dy = (j * 8.0f - sp.y) * 1.7f;
+                float f = std::max(0.0f, 1.0f - (dx * dx + dy * dy) * inv_r2);
+                f = f * f * spot_k;
+                r += sp.col[0] * f;
+                g += sp.col[1] * f;
+                b += sp.col[2] * f;
             }
-            const float cov = std::clamp(width / 2 - d + 0.5f, 0.0f, 1.0f);
-            if (cov > 0) c.Blend(x, y, color, u8(cov * 255));
+            const float vx = fx - 0.5f, vy = fy - 0.45f;
+            const float vig = std::max(0.0f, 1.0f - 0.55f * (vx * vx + vy * vy * 1.2f));
+            int* o = &F.v[(static_cast<std::size_t>(j) * F.lw + i) * 3];
+            o[0] = static_cast<int>(std::clamp(r * vig, 0.0f, 255.0f) * 256.0f);
+            o[1] = static_cast<int>(std::clamp(g * vig, 0.0f, 255.0f) * 256.0f);
+            o[2] = static_cast<int>(std::clamp(b * vig, 0.0f, 255.0f) * 256.0f);
         }
     }
 }
 
-void Disc(Canvas& c, float cx, float cy, float r, u32 color) {
-    for (int y = int(cy - r - 1); y <= int(cy + r + 1); ++y)
-        for (int x = int(cx - r - 1); x <= int(cx + r + 1); ++x) {
-            const float d = std::hypot(x + 0.5f - cx, y + 0.5f - cy);
-            const float cov = std::clamp(r - d + 0.5f, 0.0f, 1.0f);
-            if (cov > 0) c.Blend(x, y, color, u8(cov * 255));
-        }
-}
+// ---- pictures ----------------------------------------------------------------------------------
 
-float SmoothMin(float a, float b, float k) {
-    const float h = std::clamp(0.5f + 0.5f * (b - a) / k, 0.0f, 1.0f);
-    return b + (a - b) * h - k * h * (1 - h);
-}
-
-// Signed distance to the gamepad silhouette (negative inside), in pixels.
-float PadSdf(float px, float py, float cx, float cy, float s) {
-    const float body = SegDist(px, py, cx - 0.25f * s, cy - 0.07f * s, cx + 0.25f * s, cy - 0.07f * s) - 0.19f * s;
-    const float gl = SegDist(px, py, cx - 0.24f * s, cy, cx - 0.33f * s, cy + 0.22f * s) - 0.12f * s;
-    const float gr = SegDist(px, py, cx + 0.24f * s, cy, cx + 0.33f * s, cy + 0.22f * s) - 0.12f * s;
-    return SmoothMin(SmoothMin(body, gl, 0.07f * s), gr, 0.07f * s);
-}
-
-// ---- icons ------------------------------------------------------------------------------
-
-void IconHome(Canvas& c, float cx, float cy, float s, u32 col) {
-    const float w = s * 0.11f;
-    Stroke(c, {{cx - s * 0.40f, cy - s * 0.02f}, {cx, cy - s * 0.38f}, {cx + s * 0.40f, cy - s * 0.02f}}, w, col);
-    Stroke(c, {{cx - s * 0.28f, cy - s * 0.12f}, {cx - s * 0.28f, cy + s * 0.34f}, {cx - s * 0.07f, cy + s * 0.34f},
-               {cx - s * 0.07f, cy + s * 0.12f}, {cx + s * 0.07f, cy + s * 0.12f}, {cx + s * 0.07f, cy + s * 0.34f},
-               {cx + s * 0.28f, cy + s * 0.34f}, {cx + s * 0.28f, cy - s * 0.12f}}, w, col);
-}
-
-void IconCog(Canvas& c, float cx, float cy, float s, u32 col) {
-    const float w = s * 0.11f;
-    for (int i = 0; i < 8; ++i) {
-        const float a = i * 3.14159265f / 4;
-        Stroke(c, {{cx + std::cos(a) * s * 0.27f, cy + std::sin(a) * s * 0.27f},
-                   {cx + std::cos(a) * s * 0.41f, cy + std::sin(a) * s * 0.41f}}, w * 1.15f, col);
-    }
-    std::vector<Pt> ring, inner;
-    for (int i = 0; i < 40; ++i) {
-        const float a = i * 2 * 3.14159265f / 40;
-        ring.push_back({cx + std::cos(a) * s * 0.27f, cy + std::sin(a) * s * 0.27f});
-        inner.push_back({cx + std::cos(a) * s * 0.09f, cy + std::sin(a) * s * 0.09f});
-    }
-    Stroke(c, ring, w, col, true);
-    Stroke(c, inner, w * 0.8f, col, true);
-}
-
-void IconDownload(Canvas& c, float cx, float cy, float s, u32 col) {
-    const float w = s * 0.11f;
-    Stroke(c, {{cx, cy - s * 0.36f}, {cx, cy + s * 0.12f}}, w, col);
-    Stroke(c, {{cx - s * 0.18f, cy - s * 0.06f}, {cx, cy + s * 0.12f}, {cx + s * 0.18f, cy - s * 0.06f}}, w, col);
-    Stroke(c, {{cx - s * 0.36f, cy + s * 0.12f}, {cx - s * 0.36f, cy + s * 0.34f}, {cx + s * 0.36f, cy + s * 0.34f},
-               {cx + s * 0.36f, cy + s * 0.12f}}, w, col);
-}
-
-void IconFolder(Canvas& c, float cx, float cy, float s, u32 col) {
-    const float w = s * 0.11f;
-    Stroke(c, {{cx - s * 0.38f, cy - s * 0.26f}, {cx - s * 0.12f, cy - s * 0.26f}, {cx - s * 0.04f, cy - s * 0.16f},
-               {cx + s * 0.38f, cy - s * 0.16f}, {cx + s * 0.38f, cy + s * 0.30f}, {cx - s * 0.38f, cy + s * 0.30f}},
-           w, col, true);
-}
-
-void DrawDockIcon(Canvas& c, const Fonts& f, const DockItem& item, float cx, float cy, float s, u32 col) {
-    switch (item.icon) {
-    case DockIcon::Home: IconHome(c, cx, cy, s, col); break;
-    case DockIcon::Systems: DrawGamepad(c, cx, cy + s * 0.04f, s * 1.1f, col, s * 0.1f); break;
-    case DockIcon::Install: IconDownload(c, cx, cy, s, col); break;
-    case DockIcon::Settings: IconCog(c, cx, cy, s, col); break;
-    case DockIcon::Folder: IconFolder(c, cx, cy, s, col); break;
-    case DockIcon::Text: {
-        const char* t = item.text ? item.text : "?";
-        const int size = int(s * 0.46f);
-        const int w = f.bold->Measure(t, size);
-        f.bold->Draw(c, int(cx) - w / 2, int(cy + size * 0.36f), t, size, col);
-        break;
-    }
-    }
-}
-
-// ---- pictures ------------------------------------------------------------------------------
-
-struct Image {
-    std::vector<u32> px;
-    int w{}, h{};
+struct Picture {
+    Image img;
+    u32 accent = 0;
+    std::uint64_t id = 0;
 };
-std::unordered_map<std::string, Image> g_images;      // by system id
-std::unordered_map<std::string, Image> g_game_images; // by game path
-Image g_avatar;
 
-void BlitImage(Canvas& c, const Image& img, int bx, int by, int bw, int bh, bool cover, int clip_r) {
-    if (img.w <= 0 || img.h <= 0) return;
-    const float sx = float(bw) / img.w, sy = float(bh) / img.h;
-    const float s = cover ? std::max(sx, sy) : std::min(sx, sy);
-    const int dw = std::max(1, int(img.w * s)), dh = std::max(1, int(img.h * s));
-    const int dx = bx + (bw - dw) / 2, dy = by + (bh - dh) / 2;
-    for (int oy = std::max(dy, by); oy < std::min(dy + dh, by + bh); ++oy) {
-        const float fy = (oy - dy + 0.5f) / s - 0.5f;
-        const int y0 = std::clamp(int(std::floor(fy)), 0, img.h - 1), y1 = std::min(y0 + 1, img.h - 1);
-        const float ty = std::clamp(fy - y0, 0.0f, 1.0f);
-        for (int ox = std::max(dx, bx); ox < std::min(dx + dw, bx + bw); ++ox) {
-            const float fx = (ox - dx + 0.5f) / s - 0.5f;
-            const int x0 = std::clamp(int(std::floor(fx)), 0, img.w - 1), x1 = std::min(x0 + 1, img.w - 1);
-            const float tx = std::clamp(fx - x0, 0.0f, 1.0f);
-            const u32 top = Canvas::Mix(img.px[y0 * img.w + x0], img.px[y0 * img.w + x1], tx);
-            const u32 bot = Canvas::Mix(img.px[y1 * img.w + x0], img.px[y1 * img.w + x1], tx);
-            const u32 col = Canvas::Mix(top, bot, ty);
-            float cov = ((col >> 24) & 0xFF) / 255.0f;
-            if (clip_r > 0)
-                cov *= Canvas::RoundCoverage(ox + 0.5f, oy + 0.5f, float(bx), float(by), float(bw), float(bh), float(clip_r));
-            if (cov > 0.0f) c.Blend(ox, oy, col | 0xFF000000u, u8(cov * 255.0f));
+std::atomic<std::uint64_t> g_next_pic{1};
+std::mutex g_pic_mutex;
+std::unordered_map<std::string, std::shared_ptr<const Picture>> g_system_pics;
+std::unordered_map<std::string, std::shared_ptr<const Picture>> g_game_pics;
+// 3DS icons, by game path and a checksum of the icon.
+std::unordered_map<std::uint64_t, std::shared_ptr<const Picture>> g_icon_pics;
+// Default system cards, drawn once per system.
+std::unordered_map<std::string, std::shared_ptr<const Picture>> g_card_pics;
+Image g_avatar;
+std::uint64_t g_avatar_id = 0;
+
+std::shared_ptr<const Picture> MakePicture(Image img, u32 accent = 0) {
+    auto p = std::make_shared<Picture>();
+    p->accent = accent ? accent : Gfx::AverageColor(img, MakeColor(80, 110, 170));
+    p->img = std::move(img);
+    p->id = g_next_pic.fetch_add(1);
+    return p;
+}
+
+std::shared_ptr<const Picture> Find(const std::unordered_map<std::string, std::shared_ptr<const Picture>>& map,
+                                    std::string_view key) {
+    std::lock_guard lock{g_pic_mutex};
+    const auto it = map.find(std::string{key});
+    return it == map.end() ? nullptr : it->second;
+}
+
+std::shared_ptr<const Picture> IconPicture(const TileInfo& t) {
+    if (!t.icon || t.icon->empty() || t.icon_size <= 0 ||
+        t.icon->size() < static_cast<std::size_t>(t.icon_size) * t.icon_size) {
+        return nullptr;
+    }
+    std::uint64_t key = std::hash<std::string_view>{}(t.art_key);
+    const std::vector<u32>& px = *t.icon;
+    for (std::size_t i = 0; i < px.size(); i += 97) {
+        key = key * 1099511628211ull + px[i];
+    }
+    {
+        std::lock_guard lock{g_pic_mutex};
+        if (auto it = g_icon_pics.find(key); it != g_icon_pics.end()) {
+            return it->second;
+        }
+    }
+    // Cheap (a copy and an average), and the same on every thread, so it may be built anywhere.
+    Image img;
+    img.w = img.h = t.icon_size;
+    img.px = px;
+    img.opaque = true;
+    for (u32& p : img.px) {
+        if ((p >> 24) != 0xFF) {
+            img.opaque = false;
+            break;
+        }
+    }
+    auto pic = MakePicture(std::move(img));
+    std::lock_guard lock{g_pic_mutex};
+    if (g_icon_pics.size() > 1024) {
+        g_icon_pics.clear();
+    }
+    return g_icon_pics.emplace(key, std::move(pic)).first->second;
+}
+
+// ---- the sprite cache: pictures at the exact size they're drawn, and baked glass ----
+
+struct CacheEntry {
+    std::shared_ptr<const Image> img;
+    std::uint64_t last = 0;
+    std::size_t bytes = 0;
+};
+std::mutex g_cache_mutex;
+std::unordered_map<std::uint64_t, CacheEntry> g_cache;
+std::size_t g_cache_bytes = 0;
+constexpr std::size_t kCacheBudget = 32u << 20;
+
+std::uint64_t Key(std::initializer_list<std::uint64_t> parts) {
+    std::uint64_t h = 0xCBF29CE484222325ull;
+    for (std::uint64_t p : parts) {
+        h ^= p + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+        h *= 0x100000001B3ull;
+    }
+    return h;
+}
+
+// The cached image for `key`, built with `build` if missing and building is allowed now.
+// `budgeted` builds (the slow picture resizes) are spread over frames.
+std::shared_ptr<const Image> Cached(std::uint64_t key, bool budgeted, const std::function<Image()>& build) {
+    const std::uint64_t frame = g_frame.load(std::memory_order_relaxed);
+    {
+        std::lock_guard lock{g_cache_mutex};
+        if (auto it = g_cache.find(key); it != g_cache.end()) {
+            it->second.last = frame;
+            return it->second.img;
+        }
+    }
+    if (!MayBuild() || (budgeted && !TakeBudget())) {
+        return nullptr;
+    }
+    auto img = std::make_shared<const Image>(build());
+    std::lock_guard lock{g_cache_mutex};
+    CacheEntry& e = g_cache[key];
+    if (e.img) {
+        g_cache_bytes -= e.bytes;
+    }
+    e.img = img;
+    e.last = frame;
+    e.bytes = img->px.size() * sizeof(u32);
+    g_cache_bytes += e.bytes;
+    return img;
+}
+
+void TrimCache(bool all) {
+    std::lock_guard lock{g_cache_mutex};
+    if (all) {
+        g_cache.clear();
+        g_cache_bytes = 0;
+        return;
+    }
+    if (g_cache_bytes <= kCacheBudget) {
+        return;
+    }
+    // Oldest first, never what the last frame used.
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> order;
+    order.reserve(g_cache.size());
+    for (const auto& [k, e] : g_cache) {
+        order.emplace_back(e.last, k);
+    }
+    std::sort(order.begin(), order.end());
+    const std::uint64_t frame = g_frame.load();
+    for (const auto& [last, k] : order) {
+        if (g_cache_bytes <= kCacheBudget * 3 / 4 || last + 1 >= frame) {
+            break;
+        }
+        auto it = g_cache.find(k);
+        g_cache_bytes -= it->second.bytes;
+        g_cache.erase(it);
+    }
+}
+
+// Draws `fg` over `bg` at (ox, oy), straight alpha.
+void Composite(Image& bg, const Image& fg, int ox, int oy) {
+    for (int y = 0; y < fg.h; ++y) {
+        const int by = y + oy;
+        if (by < 0 || by >= bg.h) continue;
+        for (int x = 0; x < fg.w; ++x) {
+            const int bx = x + ox;
+            if (bx < 0 || bx >= bg.w) continue;
+            const u32 f = fg.px[static_cast<std::size_t>(y) * fg.w + x];
+            u32& b = bg.px[static_cast<std::size_t>(by) * bg.w + bx];
+            const u32 a = f >> 24;
+            b = a == 255 ? f : Gfx::Lerp256(b, f, a + (a >> 7));
         }
     }
 }
 
-bool Opaque(const Image& img) {
-    for (std::size_t i = 0; i < img.px.size(); i += 97)
-        if (((img.px[i] >> 24) & 0xFF) != 0xFF) return false;
-    return true;
+// Share of pixels that are (nearly) opaque.
+float OpaqueShare(const Image& img) {
+    if (img.opaque) return 1.0f;
+    std::size_t n = 0, solid = 0;
+    const std::size_t step = std::max<std::size_t>(1, img.px.size() / 4096);
+    for (std::size_t i = 0; i < img.px.size(); i += step, ++n) {
+        solid += (img.px[i] >> 24) >= 250 ? 1 : 0;
+    }
+    return n ? float(solid) / float(n) : 0.0f;
 }
 
-// A picture fills the box; a logo with transparency sits inside it.
-void DrawPicture(Canvas& c, const Image& img, int x, int y, int w, int h, int r) {
-    if (Opaque(img)) {
-        BlitImage(c, img, x, y, w, h, true, r);
-    } else {
-        const int pad = std::max(6, w / 9);
-        BlitImage(c, img, x + pad, y + pad, w - 2 * pad, h - 2 * pad, false, 0);
+// A square version of `src`: photos fill it, pictures far from square (box art) sit on a
+// blurred copy of themselves, and logos with transparency keep a margin.
+Image BuildSquare(const Image& src, int s) {
+    if (OpaqueShare(src) < 0.6f) {
+        const int inner = std::max(1, s - 2 * std::max(4, s / 9));
+        const float k = std::min(float(inner) / src.w, float(inner) / src.h);
+        const int w = std::max(1, static_cast<int>(std::lround(src.w * k)));
+        const int h = std::max(1, static_cast<int>(std::lround(src.h * k)));
+        const Image fg = Gfx::Resize(src, w, h);
+        Image out;
+        out.w = out.h = s;
+        out.opaque = false;
+        out.px.assign(static_cast<std::size_t>(s) * s, 0);
+        const int ox = (s - w) / 2, oy = (s - h) / 2;
+        for (int y = 0; y < h; ++y) {
+            std::copy_n(fg.px.data() + static_cast<std::size_t>(y) * w, w,
+                        out.px.data() + static_cast<std::size_t>(y + oy) * s + ox);
+        }
+        return out;
     }
+    const float aspect = float(src.w) / float(src.h);
+    if (src.opaque && aspect > 0.8f && aspect < 1.25f) {
+        return Gfx::ResizeCover(src, s, s);
+    }
+    // Blurred, darkened fill from the picture itself, then the whole picture on top.
+    Image solid = src;
+    solid.opaque = true;
+    for (u32& p : solid.px) {
+        p |= 0xFF000000u;
+    }
+    const int small = std::max(8, s / 6);
+    Image bg = Gfx::ResizeCover(solid, small, small);
+    Gfx::BoxBlur(bg, 2);
+    bg = Gfx::Resize(bg, s, s);
+    for (u32& p : bg.px) {
+        p = Canvas::Mix(p, kBlack, 0.42f) | 0xFF000000u;
+    }
+    const float k = std::min(float(s) / src.w, float(s) / src.h);
+    const int w = std::max(1, static_cast<int>(std::lround(src.w * k)));
+    const int h = std::max(1, static_cast<int>(std::lround(src.h * k)));
+    Composite(bg, Gfx::Resize(src, w, h), (s - w) / 2, (s - h) / 2);
+    bg.opaque = true;
+    return bg;
 }
+
 
 std::string Initials(std::string_view title) {
     std::string out;
     bool start = true;
     for (char ch : title) {
-        if (ch == ' ' || ch == '-' || ch == ':' || ch == '.') { start = true; continue; }
+        if (ch == ' ' || ch == '-' || ch == ':' || ch == '.') {
+            start = true;
+            continue;
+        }
         if (start && std::isalnum(static_cast<unsigned char>(ch))) {
             out += ch;
             if (out.size() == 2) break;
@@ -216,35 +392,273 @@ std::string Initials(std::string_view title) {
     return out;
 }
 
+// ---- glass ----------------------------------------------------------------------------------------
+
+// Frosted glass: a translucent body over whatever is below, lit along its top edge.
+void GlassDirect(Canvas& c, int x, int y, int w, int h, int r, bool raised, float strength) {
+    if (raised) {
+        c.Glow(x, y, w, h, r, 30, Black(A(0.55f * strength)), true, 10);
+    }
+    const u8 top = A(0.62f * strength + 0.18f), bot = A(0.70f * strength + 0.18f);
+    const float rows = float(std::max(1, h - 1));
+    // One pass: the body's gradient, a sheen over its upper half and a bright hairline along
+    // the top edge, all following the rounded outline.
+    c.FillRoundAAWith(x, y, w, h, r, [top, bot, rows](float t) {
+        const u32 base = Canvas::Mix(MakeColor(0x2C, 0x2C, 0x3A, top), MakeColor(0x18, 0x18, 0x22, bot), t);
+        const float row = t * rows;
+        float lift = t < 0.5f ? 0.08f * (1 - 2 * t) * (1 - 2 * t) : 0.0f;
+        lift += row < 1.0f ? 0.30f : row < 2.0f ? 0.10f : 0.0f;
+        return Canvas::Mix(base, kWhite, std::min(1.0f, lift));
+    });
+    c.RingRoundAA(x, y, w, h, r, 1.0f, White(0x22));
+}
+
+// The same, baked once per size into a sprite.
+void Glass(Canvas& c, int x, int y, int w, int h, int r, bool raised, float strength = 1.0f) {
+    const int m = raised ? 30 : 1, drop = raised ? 10 : 0;
+    const auto sprite = Cached(Key({2, u64(w), u64(h), u64(r), u64(raised), u64(strength * 1000)}), false, [&] {
+        return Gfx::RenderSprite(w + 2 * m, h + 2 * m + drop, m, m, [&](Canvas& t) { GlassDirect(t, 0, 0, w, h, r, raised, strength); });
+    });
+    if (sprite) {
+        c.DrawSprite(*sprite, x - m, y - m);
+    } else {
+        GlassDirect(c, x, y, w, h, r, raised, strength);
+    }
+}
+
+void DrawIcon(Canvas& c, DockIconShape shape, float cx, float cy, int size, u32 color) {
+    const auto mask = Shapes::IconMask(shape, size, MayBuild());
+    if (mask) {
+        c.DrawMask(*mask, static_cast<int>(std::lround(cx - size / 2.0f)),
+                   static_cast<int>(std::lround(cy - size / 2.0f)), color);
+    }
+}
+
 void Chip(Canvas& c, const Fonts& f, int right, int bottom, std::string_view text, u32 color) {
-    const int w = f.bold->Measure(text, 11) + 12;
+    const int w = f.bold->Measure(text, 11) + 14;
     const int x = right - w, y = bottom - 20;
-    c.FillRoundAA(x, y, w, 20, 10, Alpha(color, 0xF0));
-    f.bold->Draw(c, x + 6, CenterBaseline(y, 20, 11), text, 11, MakeColor(0xFF, 0xFF, 0xFF));
+    c.FillRoundAA(x, y, w, 20, 10, WithAlpha(Canvas::Mix(color, kBlack, 0.12f), 0xEE));
+    c.RingRoundAA(x, y, w, 20, 10, 1.0f, White(0x30));
+    f.bold->Draw(c, x + 7, CenterBaseline(y, 20, 11), text, 11, kWhite);
 }
 
 constexpr int kDockStep = 86;
 int DockW(int n) { return n * kDockStep + 32; }
-int DockX(const Canvas& c, int n) { return (c.Width() - DockW(n)) / 2; }
-int DockY(const Canvas& c) { return c.Height() - kHintH + 8; }
+int DockX(int n) { return (g_screen_w - DockW(n)) / 2; }
+int DockY() { return g_screen_h - kHintH + 8; }
+
+// ---- carousel geometry ----
+
+constexpr float kCardBig = 204.0f, kCardSmall = 96.0f, kCardX = 540.0f;
+float CarouselMidY() {
+    return kContentTop + (g_screen_h - kHintH - 44 - kContentTop) / 2.0f;
+}
+struct CardRect {
+    int x, y, s;
+    float k; // 1 focused .. 0 neighbour
+};
+CardRect CardAt(int i, float anim) {
+    const float off = i - anim;
+    const float k = std::max(0.0f, 1.0f - std::fabs(off));
+    const float size = kCardSmall + (kCardBig - kCardSmall) * k;
+    const float step1 = kCardBig / 2 + 18 + kCardSmall / 2;
+    const float y = CarouselMidY() + step1 * std::clamp(off, -1.0f, 1.0f) +
+                    (std::fabs(off) > 1 ? (off > 0 ? 1 : -1) * (std::fabs(off) - 1) * (kCardSmall + 18) : 0.0f);
+    return {static_cast<int>(kCardX - size / 2), static_cast<int>(y - size / 2), static_cast<int>(size), k};
+}
+int CarouselTextX() {
+    return static_cast<int>(kCardX + kCardBig / 2 + 52);
+}
+struct Rect {
+    int x, y, w, h;
+};
+Rect PictureButton() {
+    return {CarouselTextX(), static_cast<int>(CarouselMidY()) + 80, 238, 40};
+}
+
+// The default look of a system card, drawn once into a picture.
+std::shared_ptr<const Picture> DefaultCard(const Fonts& f, const SystemCard& card) {
+    const std::string key = std::string{card.id} + "#" + std::to_string(card.color);
+    if (auto p = Find(g_card_pics, key)) {
+        return p;
+    }
+    if (!TakeBudget()) {
+        return nullptr;
+    }
+    constexpr int s = static_cast<int>(kCardBig);
+    Canvas tmp;
+    tmp.Resize(s, s);
+    const u32 col = card.color;
+    tmp.FillRoundAAWith(0, 0, s, s, 0, [col](float t) {
+        return Canvas::Mix(Canvas::Mix(col, kWhite, 0.10f), Canvas::Mix(col, MakeColor(0x0C, 0x0A, 0x16), 0.62f), t);
+    });
+    // Soft light from the top left and a large faint ring.
+    tmp.Disc(s * 0.18f, s * 0.12f, s * 0.62f, White(0x16));
+    tmp.Circle(s * 0.82f, s * 0.92f, s * 0.46f, 10.0f, White(0x0E));
+    tmp.Circle(s * 0.82f, s * 0.92f, s * 0.30f, 4.0f, White(0x0A));
+    const int ts = card.badge.size() > 3 ? 42 : 56;
+    const int bw = f.mark->Measure(card.badge, ts);
+    const int bx = (s - bw) / 2, by = s / 2 + static_cast<int>(ts * 0.36f);
+    f.mark->Draw(tmp, bx + 2, by + 4, card.badge, ts, Black(0x60));
+    f.mark->Draw(tmp, bx, by, card.badge, ts, Canvas::Mix(col, kWhite, 0.82f));
+    Image img;
+    img.w = img.h = s;
+    img.px.assign(tmp.Data(), tmp.Data() + static_cast<std::size_t>(s) * s);
+    auto pic = MakePicture(std::move(img), col | 0xFF000000u);
+    std::lock_guard lock{g_pic_mutex};
+    return g_card_pics.emplace(key, std::move(pic)).first->second;
+}
 
 } // namespace
 
-// ---- pictures ----------------------------------------------------------------------------
+// ---- frames ----------------------------------------------------------------------------------------
 
+void BeginFrame(double now, int screen_w, int screen_h) {
+    const double dt = g_last_now < 0 ? 1.0 : std::clamp(now - g_last_now, 0.0, 1.0);
+    g_last_now = now;
+    g_now = now;
+    g_screen_w = screen_w;
+    g_screen_h = screen_h;
+    g_frame.fetch_add(1);
+    const float k = 1.0f - static_cast<float>(std::exp(-dt * 2.4));
+    const float target[3] = {float(g_amb_target & 0xFF), float((g_amb_target >> 8) & 0xFF),
+                             float((g_amb_target >> 16) & 0xFF)};
+    for (int i = 0; i < 3; ++i) {
+        g_amb[i] += (target[i] - g_amb[i]) * k;
+    }
+    Spot& sp = g_spot;
+    const float ks = 1.0f - static_cast<float>(std::exp(-dt * 5.0));
+    sp.strength += (sp.target - sp.strength) * ks;
+    for (int i = 0; i < 3; ++i) {
+        sp.col[i] += (float((sp.target_col >> (i * 8)) & 0xFF) - sp.col[i]) * ks;
+    }
+    BuildField(now);
+    TrimCache(false);
+    g_budget.store(4);
+    g_may_build.store(true);
+}
+
+void EndWarmup() {
+    g_may_build.store(false);
+}
+
+void SetAmbient(u32 color) {
+    g_amb_target = color;
+}
+
+void SetSpot(float x, float y, float radius, u32 color, float strength) {
+    Spot& sp = g_spot;
+    if (sp.strength < 0.01f && strength > 0.0f) {
+        // Appearing: start in the new colour rather than sliding from the old one.
+        for (int i = 0; i < 3; ++i) {
+            sp.col[i] = float((color >> (i * 8)) & 0xFF);
+        }
+    }
+    sp.x = x;
+    sp.y = y;
+    sp.radius = radius;
+    sp.target_col = color;
+    sp.target = strength;
+}
+
+void TrimCaches() {
+    TrimCache(true);
+    std::lock_guard lock{g_pic_mutex};
+    g_icon_pics.clear();
+}
+
+void DrawBackdrop(Canvas& c) {
+    const Field& F = g_field;
+    if (F.v.empty() || F.w != c.Width() || F.h != c.Height()) {
+        c.Clear(kColBg);
+        return;
+    }
+    // Three channels ride in one vector (NEON on the Switch); the fourth lane carries alpha.
+    typedef std::int32_t v4i __attribute__((vector_size(16)));
+    typedef std::uint8_t v4b __attribute__((vector_size(4)));
+    const auto& noise = Noise();
+    std::vector<v4i> row(static_cast<std::size_t>(F.lw));
+    u32* px = c.Data();
+    const int x0 = c.ClipX0(), x1 = c.ClipX1();
+    for (int y = c.ClipY0(); y < c.ClipY1(); ++y) {
+        const int j = y >> 3, fy = y & 7;
+        const int* a = &F.v[static_cast<std::size_t>(j) * F.lw * 3];
+        const int* b = &F.v[static_cast<std::size_t>(j + 1) * F.lw * 3];
+        v4i* rp = row.data();
+        for (int i = 0; i < F.lw; ++i) {
+            const v4i va = {a[i * 3], a[i * 3 + 1], a[i * 3 + 2], 255 * 256};
+            const v4i vb = {b[i * 3], b[i * 3 + 1], b[i * 3 + 2], 255 * 256};
+            rp[i] = (va * (8 - fy) + vb * fy) >> 3;
+        }
+        u32* out = px + static_cast<std::size_t>(y) * F.w;
+        const u8* nrow = noise.data() + (y & 63) * 64;
+        for (int x = x0; x < x1;) {
+            const int i = x >> 3;
+            const v4i d = rp[i + 1] - rp[i];
+            v4i v = rp[i] * 8 + d * (x & 7); // eighths
+            const int end = std::min(x1, (i + 1) * 8);
+            for (; x < end; ++x) {
+                // Values stay below 255 * 256 and the noise below 256, so nothing overflows a byte.
+                const v4i o = ((v >> 3) + static_cast<int>(nrow[x & 63])) >> 8;
+                const v4b bytes = __builtin_convertvector(o, v4b);
+                std::memcpy(out + x, &bytes, sizeof(u32));
+                v += d;
+            }
+        }
+    }
+}
+
+// ---- pictures ----------------------------------------------------------------------------------------
+
+void SetSystemImage(const std::string& id, Image img) {
+    std::lock_guard lock{g_pic_mutex};
+    if (img.Empty()) {
+        g_system_pics.erase(id);
+        return;
+    }
+    g_system_pics[id] = MakePicture(std::move(img));
+}
+bool HasSystemImage(const std::string& id) {
+    std::lock_guard lock{g_pic_mutex};
+    return g_system_pics.count(id) != 0;
+}
+void SetGameImage(const std::string& path, Image img) {
+    std::lock_guard lock{g_pic_mutex};
+    if (img.Empty()) {
+        g_game_pics.erase(path);
+        return;
+    }
+    g_game_pics[path] = MakePicture(std::move(img));
+}
+bool HasGameImage(const std::string& path) {
+    std::lock_guard lock{g_pic_mutex};
+    return g_game_pics.count(path) != 0;
+}
+namespace {
+Image FromRgba(std::vector<u32> rgba, int w, int h) {
+    Image img;
+    if (rgba.empty() || w <= 0 || h <= 0 || rgba.size() < static_cast<std::size_t>(w) * h) {
+        return img;
+    }
+    img.w = w;
+    img.h = h;
+    img.px = std::move(rgba);
+    img.opaque = std::all_of(img.px.begin(), img.px.end(), [](u32 p) { return (p >> 24) == 0xFF; });
+    return img;
+}
+} // namespace
 void SetSystemImage(const std::string& id, std::vector<u32> rgba, int w, int h) {
-    if (rgba.empty() || w <= 0 || h <= 0) { g_images.erase(id); return; }
-    g_images[id] = Image{std::move(rgba), w, h};
+    SetSystemImage(id, FromRgba(std::move(rgba), w, h));
 }
-bool HasSystemImage(const std::string& id) { return g_images.count(id) != 0; }
 void SetGameImage(const std::string& path, std::vector<u32> rgba, int w, int h) {
-    if (rgba.empty() || w <= 0 || h <= 0) { g_game_images.erase(path); return; }
-    g_game_images[path] = Image{std::move(rgba), w, h};
+    SetGameImage(path, FromRgba(std::move(rgba), w, h));
 }
-bool HasGameImage(const std::string& path) { return g_game_images.count(path) != 0; }
-void SetAvatar(std::vector<u32> rgba, int w, int h) { g_avatar = Image{std::move(rgba), w, h}; }
+void SetAvatar(std::vector<u32> rgba, int w, int h) {
+    g_avatar = FromRgba(std::move(rgba), w, h);
+    ++g_avatar_id;
+}
 
-// ---- layout --------------------------------------------------------------------------------
+// ---- layout --------------------------------------------------------------------------------------------
 
 Grid ComputeGrid(int screen_w, int screen_h) {
     Grid g;
@@ -260,173 +674,347 @@ Grid ComputeGrid(int screen_w, int screen_h) {
     return g;
 }
 
-void DrawBackdrop(Canvas& c) {
-    static std::vector<u32> cache;
-    static int cw = 0, ch = 0;
-    const int w = c.Width(), h = c.Height();
-    if (cw != w || ch != h || cache.empty()) {
-        cache.assign(std::size_t(w) * h, 0);
-        // Smooth black with a faint violet glow low on the right and a cool one top-left;
-        // a touch of noise keeps the gradient from banding.
-        u32 seed = 0x9E3779B9u;
-        for (int y = 0; y < h; ++y) {
-            for (int x = 0; x < w; ++x) {
-                const float t = float(y) / h;
-                float r = 7 - 2 * t, g = 7 - 2 * t, b = 10 - 3 * t;
-                const float d1x = (x - w * 0.15f) / (w * 0.6f), d1y = (y + h * 0.15f) / (h * 0.8f);
-                const float g1 = std::max(0.0f, 1.0f - (d1x * d1x + d1y * d1y));
-                const float d2x = (x - w * 0.72f) / (w * 0.6f), d2y = (y - h * 0.85f) / (h * 0.7f);
-                const float g2 = std::max(0.0f, 1.0f - (d2x * d2x + d2y * d2y));
-                r += 6 * g1 * g1 + 26 * g2 * g2;
-                g += 10 * g1 * g1 + 12 * g2 * g2;
-                b += 16 * g1 * g1 + 34 * g2 * g2;
-                seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
-                const float n = ((seed & 0xFF) / 255.0f - 0.5f) * 1.2f;
-                cache[std::size_t(y) * w + x] = MakeColor(u8(std::clamp(r + n, 0.0f, 255.0f)),
-                                                          u8(std::clamp(g + n, 0.0f, 255.0f)),
-                                                          u8(std::clamp(b + n, 0.0f, 255.0f)));
-            }
-        }
-        cw = w;
-        ch = h;
-    }
-    c.CopyFrom(cache);
-}
-
-// ---- profile bar ------------------------------------------------------------------------------
+// ---- profile bar -----------------------------------------------------------------------------------------
 
 void DrawTopBar(Canvas& c, const Fonts& f, const TopBar& bar) {
-    const int cx = 70, cy = 56, r = 32;
-    Disc(c, cx, cy + 3, r + 3, Alpha(MakeColor(0, 0, 0), 0x70));
-    Disc(c, cx, cy, r + 3, Alpha(MakeColor(0xFF, 0xFF, 0xFF), 0x40));
-    if (g_avatar.w > 0) {
-        BlitImage(c, g_avatar, cx - r, cy - r, 2 * r, 2 * r, true, r);
+    const int cx = 66, cy = 54, r = 30;
+    // Avatar in a gradient ring, baked once.
+    auto avatar = [&](Canvas& t, int ax, int ay) {
+        t.Glow(ax - r, ay - r, 2 * r, 2 * r, r, 14, Black(0x80), true, 4);
+        t.RingRoundAAWith(ax - r - 5, ay - r - 5, 2 * r + 10, 2 * r + 10, r + 5, 2.5f,
+                          [](float p) { return RingAt(p * 0.6f, 0.05f); });
+        if (!g_avatar.Empty()) {
+            t.DrawImageScaled(g_avatar, float(ax - r), float(ay - r), float(2 * r), float(2 * r), r);
+        } else {
+            t.FillRoundGradient(ax - r, ay - r, 2 * r, 2 * r, r, MakeColor(0x6A, 0x60, 0x96), MakeColor(0x3A, 0x34, 0x5C));
+            const std::string first = bar.title.empty() ? "?" : std::string(bar.title.substr(0, 1));
+            const int w = f.bold->Measure(first, 28);
+            f.bold->Draw(t, ax - w / 2, ay + 10, first, 28, kColText);
+        }
+    };
+    constexpr int kAv = 56; // half the sprite
+    const std::string_view letter = g_avatar.Empty() && !bar.title.empty() ? bar.title.substr(0, 1) : std::string_view{};
+    const auto av = Cached(Key({6, g_avatar_id, std::hash<std::string_view>{}(letter)}), false, [&] {
+        return Gfx::RenderSprite(2 * kAv, 2 * kAv, kAv, kAv, [&](Canvas& t) { avatar(t, 0, 0); });
+    });
+    if (av) {
+        c.DrawSprite(*av, cx - kAv, cy - kAv);
     } else {
-        Disc(c, cx, cy, r, MakeColor(0x5A, 0x52, 0x7A));
-        const std::string first = bar.title.empty() ? "?" : std::string(bar.title.substr(0, 1));
-        const int w = f.bold->Measure(first, 28);
-        f.bold->Draw(c, cx - w / 2, cy + 10, first, 28, kColText);
+        avatar(c, cx, cy);
     }
 
     const int mid = c.Width() / 2;
-    const std::string title = f.bold->Truncate(bar.title, 24, 560);
-    const int tw = f.bold->Measure(title, 24);
-    f.bold->Draw(c, mid - tw / 2, bar.subtitle.empty() ? 64 : 54, title, 24, kColText);
-    if (!bar.subtitle.empty()) {
-        const std::string sub = f.regular->Truncate(bar.subtitle, 15, 560);
-        const int sw = f.regular->Measure(sub, 15);
-        f.regular->Draw(c, mid - sw / 2, 78, sub, 15, kColTextDim);
-    }
-
-    // Battery on the right, the clock before it.
-    int right = c.Width() - 44;
-    if (bar.battery >= 0) {
-        if (bar.charging) {
-            Stroke(c, {{float(right - 2), 46.0f}, {float(right - 10), 58.0f}, {float(right - 2), 58.0f},
-                       {float(right - 10), 70.0f}}, 3.0f, kColText);
-            right -= 20;
+    auto title_block = [&](std::string_view title, std::string_view subtitle, float alpha, int dy) {
+        if (alpha <= 0.01f) {
+            return;
         }
-        const int bw = 40, bh = 22, bx = right - bw - 6, by = 47;
-        c.RingRoundAA(bx, by, bw, bh, 6, 2.2f, kColText);
-        c.FillRoundAA(bx + bw + 1, by + 7, 4, 8, 2, kColText);
-        const u32 fill = bar.battery <= 15 && !bar.charging ? kColError : kColText;
-        c.FillRoundAA(bx + 4, by + 4, std::max(2, (bw - 8) * std::clamp(bar.battery, 0, 100) / 100), bh - 8, 3, fill);
-        right = bx - 18;
+        Canvas::FadeScope fade{c, alpha};
+        const std::string t = f.bold->Truncate(title, 24, 560);
+        const int tw = f.bold->Measure(t, 24);
+        f.bold->Draw(c, mid - tw / 2, (subtitle.empty() ? 62 : 52) + dy, t, 24, kColText);
+        if (!subtitle.empty()) {
+            const std::string sub = f.regular->Truncate(subtitle, 15, 560);
+            const int sw = f.regular->Measure(sub, 15);
+            f.regular->Draw(c, mid - sw / 2, 76 + dy, sub, 15, kColTextDim);
+        }
+    };
+    const float b = std::clamp(bar.blend, 0.0f, 1.0f);
+    const float eased = 1 - (1 - b) * (1 - b);
+    if (b < 1.0f) {
+        title_block(bar.prev_title, bar.prev_subtitle, 1 - eased, static_cast<int>(-8 * eased));
     }
+    title_block(bar.title, bar.subtitle, eased, static_cast<int>(8 * (1 - eased)));
+
+    // Clock and battery in a glass capsule on the right.
+    const int kw = f.bold->Measure(bar.clock, 26);
+    const int aw = bar.ampm.empty() ? 0 : f.bold->Measure(bar.ampm, 13) + 5;
+    const int batt_w = bar.battery >= 0 ? 36 + 12 + (bar.charging ? 14 : 0) : 0;
+    const int cap_w = 22 + kw + aw + batt_w + 20, cap_h = 46;
+    const int cap_x = c.Width() - 34 - cap_w, cap_y = 31;
+    Glass(c, cap_x, cap_y, cap_w, cap_h, cap_h / 2, false, 0.55f);
+    int x = cap_x + 22;
+    f.bold->Draw(c, x, cap_y + 32, bar.clock, 26, kColText);
+    x += kw + 5;
     if (!bar.ampm.empty()) {
-        const int aw = f.bold->Measure(bar.ampm, 14);
-        f.bold->Draw(c, right - aw, 70, bar.ampm, 14, kColText);
-        right -= aw + 4;
+        f.bold->Draw(c, x, cap_y + 32, bar.ampm, 13, kColTextDim);
+        x += aw;
     }
-    const int kw = f.bold->Measure(bar.clock, 30);
-    f.bold->Draw(c, right - kw, 70, bar.clock, 30, kColText);
+    if (bar.battery >= 0) {
+        x += 7;
+        const int bw = 34, bh = 18, by = cap_y + (cap_h - bh) / 2;
+        c.RingRoundAA(x, by, bw, bh, 6, 2.0f, White(0xE0));
+        c.FillRoundAA(x + bw + 1, by + 6, 3, 6, 1, White(0xE0));
+        const bool low = bar.battery <= 15 && !bar.charging;
+        const u32 fill = low ? kColError : bar.charging ? MakeColor(0x6E, 0xE7, 0xA7) : kColText;
+        c.FillRoundAA(x + 4, by + 4, std::max(2, (bw - 8) * std::clamp(bar.battery, 0, 100) / 100), bh - 8, 2, fill);
+        if (bar.charging) {
+            DrawIcon(c, DockIconShape::Bolt, float(x + bw + 13), float(cap_y + cap_h / 2), 16, kColText);
+        }
+    }
 }
 
-// ---- dock ---------------------------------------------------------------------------------------
+// ---- dock ------------------------------------------------------------------------------------------------
 
 int DockHitTest(const Canvas& c, int n, int x, int y) {
-    const int dx = DockX(c, n), dy = DockY(c);
+    (void)c;
+    const int dx = DockX(n), dy = DockY();
     if (y < dy || y > dy + kDockH || x < dx + 16 || x >= dx + 16 + n * kDockStep) return -1;
     return (x - dx - 16) / kDockStep;
 }
 
-void DrawDock(Canvas& c, const Fonts& f, const std::vector<DockItem>& items, int active, int cursor, bool focused) {
-    const int n = int(items.size());
-    const int x = DockX(c, n), y = DockY(c), w = DockW(n);
-    c.SoftShadow(x, y, w, kDockH, kDockH / 2, 12, 8, 0xC0);
-    c.FillRoundGradient(x, y, w, kDockH, kDockH / 2, MakeColor(0x24, 0x22, 0x2E), MakeColor(0x19, 0x18, 0x21));
-    c.RingRoundAA(x, y, w, kDockH, kDockH / 2, 1.2f, Alpha(MakeColor(0xFF, 0xFF, 0xFF), 0x1C));
-    // ZL / ZR keycaps on the corners.
-    for (int side = 0; side < 2; ++side) {
-        const char* key = side ? "ZR" : "ZL";
-        const int kx = side ? x + w - 26 : x - 18, ky = y - 12;
-        c.FillRoundAA(kx, ky, 44, 20, 6, MakeColor(0xEC, 0xEA, 0xF4));
-        const int kw = f.bold->Measure(key, 12);
-        f.bold->Draw(c, kx + (44 - kw) / 2, CenterBaseline(ky, 20, 12), key, 12, MakeColor(0x2A, 0x27, 0x36));
+void DrawDock(Canvas& c, const Fonts& f, const std::vector<DockItem>& items, const DockState& s) {
+    const int n = static_cast<int>(items.size());
+    if (n == 0) {
+        return;
     }
-    const int shown = std::clamp(focused ? cursor : active, 0, n - 1);
+    const int x = DockX(n), y = DockY(), w = DockW(n);
+    // The glass body and the ZL / ZR keycaps at its ends never change: baked once.
+    constexpr int kKeyW = 40, kKeyH = 26, kKeyGap = 12, kMargin = 30;
+    auto body = [&](Canvas& t, int bx, int by) {
+        GlassDirect(t, bx, by, w, kDockH, kDockH / 2, true, 0.75f);
+        for (int side = 0; side < 2; ++side) {
+            const char* key = side ? "ZR" : "ZL";
+            const int kx = side ? bx + w + kKeyGap : bx - kKeyGap - kKeyW, ky = by + (kDockH - kKeyH) / 2;
+            t.FillRoundAA(kx, ky, kKeyW, kKeyH, 9, White(0x14));
+            t.RingRoundAA(kx, ky, kKeyW, kKeyH, 9, 1.0f, White(0x26));
+            const int tw = f.bold->Measure(key, 12);
+            f.bold->Draw(t, kx + (kKeyW - tw) / 2, CenterBaseline(ky, kKeyH, 12), key, 12, kColTextDim);
+        }
+    };
+    const int left = kKeyGap + kKeyW + kMargin;
+    const auto sprite = Cached(Key({5, u64(w)}), false, [&] {
+        return Gfx::RenderSprite(w + 2 * left, kDockH + 2 * kMargin + 10, left, kMargin, [&](Canvas& t) { body(t, 0, 0); });
+    });
+    if (sprite) {
+        c.DrawSprite(*sprite, x - left, y - kMargin);
+    } else {
+        body(c, x, y);
+    }
+
+    // The highlight glides between items.
+    const float hx = x + 16 + s.slide * kDockStep + kDockStep / 2.0f;
+    const int pw = 66, ph = kDockH - 14;
+    const int px = static_cast<int>(std::lround(hx - pw / 2.0f)), py = y + 7;
+    if (s.focused) {
+        c.Glow(px, py, pw, ph, ph / 2, 16, WithAlpha(kColAccent, 0x50), true);
+        c.FillRoundAA(px, py, pw, ph, ph / 2, WithAlpha(kColAccent, 0x2C));
+        c.RingRoundAAWith(px, py, pw, ph, ph / 2, 1.6f, [&](float p) { return WithAlpha(RingAt(p, s.t * 0.1f), 0xD0); });
+    } else {
+        c.FillRoundAA(px, py, pw, ph, ph / 2, White(0x18));
+        c.RingRoundAA(px, py, pw, ph, ph / 2, 1.0f, White(0x1C));
+    }
+
     for (int i = 0; i < n; ++i) {
         const float cx = x + 16 + i * kDockStep + kDockStep / 2.0f, cy = y + kDockH / 2.0f;
-        const bool on = i == active;
-        if (focused && i == cursor) {
-            c.FillRoundAA(int(cx - 30), int(cy - 26), 60, 52, 18, Alpha(MakeColor(0xFF, 0xFF, 0xFF), 0x18));
+        const bool on = i == s.active;
+        // Items near the highlight lift slightly.
+        const float near = std::max(0.0f, 1.0f - std::fabs(s.slide - i));
+        const u32 col = on ? kColAccent : Canvas::Mix(White(0xC8), kWhite, near);
+        const int size = 34 + static_cast<int>(4 * near);
+        const float iy = cy - 1.5f * near;
+        switch (items[i].icon) {
+        case DockIcon::Home: DrawIcon(c, DockIconShape::Home, cx, iy, size, col); break;
+        case DockIcon::Systems: DrawIcon(c, DockIconShape::Controller, cx, iy + 1, size + 4, col); break;
+        case DockIcon::Install: DrawIcon(c, DockIconShape::Download, cx, iy, size, col); break;
+        case DockIcon::Settings: DrawIcon(c, DockIconShape::Gear, cx, iy, size, col); break;
+        case DockIcon::Folder: DrawIcon(c, DockIconShape::Folder, cx, iy, size, col); break;
+        case DockIcon::Text: {
+            const char* t = items[i].text ? items[i].text : "?";
+            const int ts = 17 + static_cast<int>(2 * near);
+            const int tw = f.bold->Measure(t, ts);
+            f.bold->Draw(c, static_cast<int>(cx) - tw / 2, static_cast<int>(iy + ts * 0.36f), t, ts, col);
+            break;
         }
-        const u32 col = on ? kColAccent : MakeColor(0xDA, 0xD6, 0xEA);
-        DrawDockIcon(c, f, items[i], cx, cy, on ? 42.0f : 38.0f, col);
+        }
+        if (on) {
+            c.Disc(cx, float(y + kDockH - 8), 2.2f, kColAccent);
+        }
     }
-    // Label bubble over the shown item.
-    const char* label = items[shown].label;
-    const int lw = f.bold->Measure(label, 16) + 28;
-    const float lx = x + 16 + shown * kDockStep + kDockStep / 2.0f;
-    const int bx = int(lx) - lw / 2, by = y - 44;
-    c.SoftShadow(bx, by, lw, 30, 15, 6, 4, 0x90);
-    c.FillRoundAA(bx, by, lw, 30, 15, MakeColor(0x2C, 0x29, 0x38));
-    f.bold->Draw(c, bx + 14, CenterBaseline(by, 30, 16), label, 16, kColText);
+
+    // Label bubble over the highlight.
+    if (s.label > 0.01f) {
+        Canvas::FadeScope fade{c, s.label};
+        const int shown = std::clamp(static_cast<int>(std::lround(s.slide)), 0, n - 1);
+        const char* label = items[static_cast<std::size_t>(shown)].label;
+        const int lw = f.bold->Measure(label, 16) + 30;
+        const int bx = static_cast<int>(hx) - lw / 2, by = y - 44 + static_cast<int>(6 * (1 - s.label));
+        Glass(c, bx, by, lw, 32, 16, true, 0.9f);
+        f.bold->Draw(c, bx + 15, CenterBaseline(by, 32, 16), label, 16, kColText);
+    }
 }
 
-// ---- tiles ----------------------------------------------------------------------------------------
+// ---- tiles --------------------------------------------------------------------------------------------------
 
-void DrawEmptySlot(Canvas& c, int x, int y) {
-    c.SoftShadow(x, y, kTileW, kTileH, 22, 6, 4, 0x70);
-    c.FillRoundGradient(x, y, kTileW, kTileH, 22, MakeColor(0x1B, 0x1A, 0x22), MakeColor(0x14, 0x13, 0x19));
-    c.RingRoundAA(x, y, kTileW, kTileH, 22, 1.0f, Alpha(MakeColor(0xFF, 0xFF, 0xFF), 0x10));
-    Disc(c, x + kTileW / 2.0f, y + kTileH / 2.0f, 3.2f, Alpha(MakeColor(0xE6, 0xE4, 0xF0), 0x90));
+u32 TileAccent(const TileInfo& t) {
+    if (!t.art_key.empty()) {
+        if (auto p = Find(g_game_pics, t.art_key)) {
+            return p->accent;
+        }
+    }
+    if (auto p = IconPicture(t)) {
+        return p->accent;
+    }
+    return t.system_color;
 }
 
-void DrawTile(Canvas& c, const Fonts& f, const TileInfo& t, int x, int y, bool selected, bool focused, float t_anim) {
-    const bool lift = selected && focused;
-    const float pulse = lift ? 0.5f + 0.5f * std::sin(t_anim * 3.0f) : 0.0f;
-    const int g = lift ? 4 + int(pulse * 2) : 0;
-    const int tx = x - g, ty = y - g, tw = kTileW + 2 * g, th = kTileH + 2 * g, r = 22 + g / 2;
-    c.SoftShadow(tx, ty, tw, th, r, lift ? 14 : 6, lift ? 9 : 4, lift ? 0xD0 : 0x70);
-    c.FillRoundGradient(tx, ty, tw, th, r, MakeColor(0x2A, 0x28, 0x34), MakeColor(0x1D, 0x1C, 0x25));
-    auto custom = t.art_key.empty() ? g_game_images.end() : g_game_images.find(std::string{t.art_key});
-    if (custom != g_game_images.end()) {
-        DrawPicture(c, custom->second, tx, ty, tw, th, r);
-    } else if (t.icon && !t.icon->empty()) {
-        c.BlitIconRounded(*t.icon, t.icon_size, tx, ty, tw, r);
-    } else {
-        // Initials, softly lit from the top.
-        c.FillRoundAAWith(tx, ty, tw, th / 2, r, [](float k) { return Alpha(MakeColor(0xFF, 0xFF, 0xFF), u8(14 * (1 - k))); });
+void DrawEmptySlot(Canvas& c, int x, int y, float alpha) {
+    if (alpha <= 0.01f) {
+        return;
+    }
+    Canvas::FadeScope fade{c, alpha};
+    c.RingRoundAA(x, y, kTileW, kTileH, kTileR, 1.2f, White(0x16));
+    c.Disc(x + kTileW / 2.0f, y + kTileH / 2.0f, 2.6f, White(0x40));
+}
+
+void DrawFocusRing(Canvas& c, float x, float y, float w, float t, float alpha) {
+    if (alpha <= 0.01f) {
+        return;
+    }
+    Canvas::FadeScope fade{c, alpha};
+    const int ix = static_cast<int>(std::lround(x)) - 6, iy = static_cast<int>(std::lround(y)) - 6;
+    const int iw = static_cast<int>(std::lround(w)) + 12;
+    const int r = kTileR + 7;
+    c.RingRoundAAWith(ix, iy, iw, iw, r, 3.2f, [t](float p) { return RingAt(p, t * 0.12f); });
+    // A faint outer halo so the ring reads on bright pictures too.
+    c.RingRoundAA(ix - 2, iy - 2, iw + 4, iw + 4, r + 2, 2.0f, Black(0x50));
+}
+
+namespace {
+
+int TileRadius(int s) {
+    return kTileR + (s - kTileW) / 8;
+}
+
+// Gloss over the top and a fine bright edge, baked into a finished face.
+void FinishFace(Canvas& c, int s, int r, float edge) {
+    c.FillRoundAAWith(0, 0, s, s * 2 / 5, r, [](float k) { return White(A(0.13f * (1 - k) * (1 - k))); });
+    c.RingRoundAA(0, 0, s, s, r, 1.2f, White(A(edge)));
+}
+
+Image CanvasImage(Canvas& c) {
+    Image img;
+    img.w = c.Width();
+    img.h = c.Height();
+    img.px.assign(c.Data(), c.Data() + static_cast<std::size_t>(img.w) * img.h);
+    img.opaque = true;
+    return img;
+}
+
+// A game's face at size s: its picture (or its initials on the system's colour) with the
+// glassy finish, opaque, square; corners are rounded when it's drawn.
+std::shared_ptr<const Image> TileFace(const Fonts& f, const TileInfo& t, const std::shared_ptr<const Picture>& pic, int s) {
+    const int r = TileRadius(s);
+    const float edge = s > kTileW ? 0.26f : 0.16f;
+    if (pic) {
+        return Cached(Key({3, pic->id, u64(s), t.system_color}), true, [&] {
+            const Image face = BuildSquare(pic->img, s);
+            Canvas tmp;
+            tmp.Resize(s, s);
+            if (!face.opaque) {
+                const u32 col = t.system_color;
+                tmp.FillRoundAAWith(0, 0, s, s, 0, [col](float k) {
+                    return Canvas::Mix(Canvas::Mix(col, kWhite, 0.10f), Canvas::Mix(col, kBlack, 0.45f), k);
+                });
+            }
+            tmp.DrawImage(face, 0, 0);
+            FinishFace(tmp, s, r, edge);
+            return CanvasImage(tmp);
+        });
+    }
+    return Cached(Key({4, std::hash<std::string_view>{}(t.title), u64(s), t.system_color}), true, [&] {
+        const u32 col = t.system_color;
+        Canvas tmp;
+        tmp.Resize(s, s);
+        tmp.FillRoundAAWith(0, 0, s, s, 0, [col](float k) {
+            return Canvas::Mix(Canvas::Mix(col, kBlack, 0.40f), Canvas::Mix(col, MakeColor(0x08, 0x08, 0x10), 0.80f), k);
+        });
+        tmp.Disc(s * 0.86f, s * 0.10f, s * 0.62f, White(0x10));
+        tmp.Circle(s * 0.10f, s * 0.98f, s * 0.42f, 6.0f, White(0x0A));
         const std::string ini = Initials(t.title);
-        const int size = 40;
-        const int iw = f.mark->Measure(ini, size);
-        f.mark->Draw(c, tx + (tw - iw) / 2, ty + th / 2 + 14, ini, size, kColText);
+        const int ts = std::max(16, static_cast<int>(s * 0.31f));
+        const int iw = f.mark->Measure(ini, ts);
+        f.mark->Draw(tmp, (s - iw) / 2 + 1, s / 2 + static_cast<int>(ts * 0.36f) + 3, ini, ts, Black(0x50));
+        f.mark->Draw(tmp, (s - iw) / 2, s / 2 + static_cast<int>(ts * 0.36f), ini, ts, kColText);
+        FinishFace(tmp, s, r, edge);
+        return CanvasImage(tmp);
+    });
+}
+
+std::shared_ptr<const Picture> TilePicture(const TileInfo& t) {
+    if (!t.art_key.empty()) {
+        if (auto p = Find(g_game_pics, t.art_key)) {
+            return p;
+        }
     }
-    c.RingRoundAA(tx, ty, tw, th, r, 1.2f, Alpha(MakeColor(0xFF, 0xFF, 0xFF), 0x18));
-    if (!t.system_badge.empty()) Chip(c, f, tx + tw - 8, ty + th - 8, t.system_badge, t.system_color);
+    return IconPicture(t);
+}
+
+} // namespace
+
+void DrawTile(Canvas& c, const Fonts& f, const TileInfo& t, int x, int y, const TileLook& look) {
+    if (look.appear <= 0.01f) {
+        return;
+    }
+    const float lift = look.lift;
+    const float size = kTileW + (kTileFocus - kTileW) * lift;
+    const int s = std::max(8, static_cast<int>(std::lround(size)));
+    const float cxf = x + kTileW / 2.0f;
+    const float cyf = y + kTileH / 2.0f - 3.0f * std::max(0.0f, lift) + (1.0f - look.appear) * 26.0f;
+    const int tx = static_cast<int>(std::lround(cxf - s / 2.0f)), ty = static_cast<int>(std::lround(cyf - s / 2.0f));
+    const int r = TileRadius(s);
+    const int rest = lift > 0.5f ? kTileFocus : kTileW;
+    const std::shared_ptr<const Picture> pic = TilePicture(t);
+    // Looked up (and, in the warm-up pass, built) even when off this band.
+    const std::shared_ptr<const Image> face = TileFace(f, t, pic, rest);
+    if (!c.RowsVisible(ty - 48, s + 96)) {
+        return;
+    }
+    Canvas::FadeScope fade{c, look.appear * (look.dim ? 0.82f : 1.0f)};
+    const float lk = std::clamp(lift, 0.0f, 1.0f);
+
+    // Shadow, and a glow in the picture's own colour when focused.
+    c.SoftShadow(tx, ty, s, s, r, 10 + static_cast<int>(12 * lk), 4 + static_cast<int>(8 * lk), A(0.42f + 0.28f * lk));
+    if (lk > 0.02f) {
+        c.Glow(tx, ty, s, s, r, 34, WithAlpha(pic ? pic->accent : t.system_color, A(0.5f * lk)), true, 8);
+    }
+
+    if (face) {
+        if (face->w == s) {
+            c.DrawImage(*face, tx, ty, r);
+        } else {
+            c.DrawImageScaled(*face, float(tx), float(ty), float(s), float(s), r);
+        }
+    } else if (pic) {
+        // Not built yet: the plain picture, scaled, keeps the tile from popping in.
+        c.FillRoundAA(tx, ty, s, s, r, Canvas::Mix(t.system_color, kBlack, 0.5f));
+        const float k = std::min(float(s) / pic->img.w, float(s) / pic->img.h);
+        c.DrawImageScaled(pic->img, tx + (s - pic->img.w * k) / 2, ty + (s - pic->img.h * k) / 2, pic->img.w * k,
+                          pic->img.h * k, r / 2);
+    } else {
+        c.FillRoundGradient(tx, ty, s, s, r, Canvas::Mix(t.system_color, kBlack, 0.40f),
+                            Canvas::Mix(t.system_color, kBlack, 0.80f));
+    }
+
+    // Now and then a band of light sweeps across the focused tile.
+    if (lk > 0.6f) {
+        constexpr float kPeriod = 4.5f, kSweep = 0.85f;
+        const float phase = std::fmod(look.t + 1.2f, kPeriod) / kSweep;
+        if (phase < 1.0f) {
+            const float pos = -0.25f + 1.5f * phase;
+            c.FillRoundAAPix(tx, ty, s, s, r, [pos, lk](float fx, float fy) {
+                const float d = std::fabs((fx + fy) * 0.5f - pos);
+                return White(A(0.22f * lk * std::max(0.0f, 1.0f - d / 0.07f)));
+            });
+        }
+    }
+
+    if (!t.system_badge.empty()) Chip(c, f, tx + s - 8, ty + s - 8, t.system_badge, t.system_color);
     int chip_x = tx + 8;
     for (std::string_view tag : t.tags) {
         const int cw = f.bold->Measure(tag, 11) + 12;
-        c.FillRoundAA(chip_x, ty + 8, cw, 18, 9, Alpha(MakeColor(0, 0, 0), 0xB8));
+        c.FillRoundAA(chip_x, ty + 8, cw, 18, 9, Black(0xB8));
         f.bold->Draw(c, chip_x + 6, CenterBaseline(ty + 8, 18, 11), tag, 11, kColText);
         chip_x += cw + 4;
-    }
-    if (lift) {
-        const float phase = t_anim * 0.12f;
-        c.RingRoundAAWith(tx - 5, ty - 5, tw + 10, th + 10, r + 5, 4.0f, [phase](float p) { return RingAt(p, phase); });
-    } else if (selected) {
-        c.RingRoundAA(tx - 3, ty - 3, tw + 6, th + 6, r + 3, 2.0f, Alpha(kColAccent, 0x80));
     }
 }
 
@@ -435,93 +1023,222 @@ void DrawTitlePill(Canvas& c, const Fonts& f, int y, std::string_view title, std
     const int tw = f.bold->Measure(t, 20), sw = f.regular->Measure(system, 15);
     const int w = tw + sw + 70, h = 40;
     const int x = (c.Width() - w) / 2;
-    c.FillRoundAA(x, y, w, h, h / 2, Alpha(MakeColor(0x1C, 0x1B, 0x25), 0xE8));
-    c.RingRoundAA(x, y, w, h, h / 2, 1.0f, Alpha(MakeColor(0xFF, 0xFF, 0xFF), 0x14));
-    Disc(c, x + 22.0f, y + h / 2.0f, 5.5f, color);
+    Glass(c, x, y, w, h, h / 2, true, 0.8f);
+    c.Disc(x + 22.0f, y + h / 2.0f, 5.5f, color);
     f.bold->Draw(c, x + 36, CenterBaseline(y, h, 20), t, 20, kColText);
     f.regular->Draw(c, x + w - 18 - sw, CenterBaseline(y, h, 15), system, 15, kColTextDim);
 }
 
-// ---- systems carousel ------------------------------------------------------------------------------
+// ---- systems carousel --------------------------------------------------------------------------------------
 
-void DrawGamepad(Canvas& c, float cx, float cy, float s, u32 col, float stroke) {
-    const int x0 = int(cx - s * 0.5f) - 2, x1 = int(cx + s * 0.5f) + 2;
-    const int y0 = int(cy - s * 0.3f) - 2, y1 = int(cy + s * 0.4f) + 2;
-    for (int y = y0; y <= y1; ++y)
-        for (int x = x0; x <= x1; ++x) {
-            const float d = PadSdf(x + 0.5f, y + 0.5f, cx, cy, s);
-            const float cov = std::clamp(stroke / 2 - std::fabs(d + stroke / 2) + 0.5f, 0.0f, 1.0f);
-            if (cov > 0) c.Blend(x, y, col, u8(cov * 255));
+void DrawController(Canvas& c, float cx, float cy, float width, u32 accent, float t) {
+    const int w = static_cast<int>(width);
+    if (!Shapes::PadReady(w)) {
+        if (!MayBuild()) {
+            return;
         }
-    const float w = stroke * 0.9f;
-    Stroke(c, {{cx - s * 0.33f, cy - s * 0.07f}, {cx - s * 0.17f, cy - s * 0.07f}}, w, col);
-    Stroke(c, {{cx - s * 0.25f, cy - s * 0.15f}, {cx - s * 0.25f, cy + s * 0.01f}}, w, col);
-    Disc(c, cx + s * 0.19f, cy - s * 0.12f, stroke * 0.62f, col);
-    Disc(c, cx + s * 0.29f, cy - s * 0.03f, stroke * 0.62f, col);
+        Shapes::BuildPad(w, [](int n, const std::function<void(int)>& fn) { Gfx::Workers::Get().Run(n, fn); });
+    }
+    // A slow float, as if it were hovering over its shadow.
+    const float bob = std::sin(t * 1.25f) * 4.0f;
+    // Once the colour settles the finished controller is kept as a sprite; while it is still
+    // changing, it is composed straight onto the canvas.
+    static u32 last_accent = 0;
+    const bool settled = accent == last_accent;
+    if (MayBuild()) {
+        last_accent = accent;
+    }
+    std::shared_ptr<const Image> sprite;
+    if (settled) {
+        const int sw = static_cast<int>(std::ceil(0.94f * w)) + 2, sh = static_cast<int>(std::ceil(0.68f * w)) + 2;
+        sprite = Cached(Key({8, u64(w), accent}), false, [&] {
+            return Gfx::RenderSprite(sw, sh, sw / 2, static_cast<int>(0.25f * w) + 1,
+                                     [&](Canvas& tc) { Shapes::DrawPad(tc, 0.0f, 0.0f, w, accent); });
+        });
+        if (sprite) {
+            c.DrawSprite(*sprite, static_cast<int>(std::lround(cx)) - sw / 2,
+                         static_cast<int>(std::lround(cy + bob)) - (static_cast<int>(0.25f * w) + 1));
+            return;
+        }
+    }
+    Shapes::DrawPad(c, std::round(cx), std::round(cy + bob), w, accent);
+}
+
+void DrawGamepad(Canvas& c, float cx, float cy, float size, u32 color, float) {
+    DrawIcon(c, DockIconShape::Controller, cx, cy, static_cast<int>(size), color);
+}
+
+int CarouselHitTest(const Canvas& c, int count, float anim, int x, int y) {
+    (void)c;
+    for (int i = 0; i < count; ++i) {
+        if (std::fabs(i - anim) > 1.6f) continue;
+        const CardRect r = CardAt(i, anim);
+        if (x >= r.x && x < r.x + r.s && y >= r.y && y < r.y + r.s) return i;
+    }
+    return -1;
+}
+
+bool CarouselPictureButtonHit(const Canvas& c, int x, int y) {
+    (void)c;
+    const Rect b = PictureButton();
+    return x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h;
 }
 
 void DrawSystemsCarousel(Canvas& c, const Fonts& f, const std::vector<SystemCard>& cards, float anim, int selected,
-                         std::string_view name, std::string_view detail, std::string_view status, bool status_ok) {
+                         const CarouselText& text, u32 accent, float t) {
     if (cards.empty()) return;
-    const SystemCard& sel = cards[std::clamp(selected, 0, int(cards.size()) - 1)];
-    const float mid_y = kContentTop + (c.Height() - kHintH - 44 - kContentTop) / 2.0f;
-    // Big tinted controller on the left.
-    for (int i = 5; i >= 1; --i) Disc(c, 210, mid_y, 70.0f + i * 18, Alpha(sel.color, u8(6)));
-    DrawGamepad(c, 210, mid_y, 210, sel.color, 15);
+    const float mid_y = CarouselMidY();
+    // The controller on the left, in the focused system's colour (the pool of light under it is
+    // the backdrop's spot, see SetSpot).
+    DrawController(c, 225.0f, mid_y + 6.0f, 330.0f, accent, t);
 
-    // The focused card and one neighbour each side, sized to fit between the bars.
-    const float big = 204, small = 96, cx = 510;
-    for (int i = 0; i < int(cards.size()); ++i) {
-        const float off = i - anim;
-        if (std::fabs(off) > 1.6f) continue;
-        const float k = std::max(0.0f, 1.0f - std::fabs(off));
-        const float size = small + (big - small) * k;
-        const float step1 = big / 2 + 18 + small / 2;
-        const float y = mid_y + step1 * std::clamp(off, -1.0f, 1.0f) + (std::fabs(off) > 1 ? (off > 0 ? 1 : -1) * (std::fabs(off) - 1) * (small + 18) : 0.0f);
-        const int x = int(cx - size / 2), yy = int(y - size / 2), sz = int(size), r = int(size * 0.12f);
-        if (yy < kContentTop - 4 || yy + sz > c.Height() - kHintH - 40) continue;
-        c.SoftShadow(x, yy, sz, sz, r, 10, 6, u8(0x80 + 0x40 * k));
-        const SystemCard& card = cards[i];
-        c.FillRoundGradient(x, yy, sz, sz, r, Canvas::Mix(card.color, MakeColor(0xFF, 0xF4, 0xEC), 0.15f),
-                            Canvas::Mix(card.color, MakeColor(0x10, 0x0C, 0x1C), 0.6f));
-        auto img = g_images.find(std::string{card.id});
-        if (img != g_images.end()) {
-            DrawPicture(c, img->second, x, yy, sz, sz, r);
-        } else {
-            // Faint diagonal lines and the system's short name.
-            const int step = std::max(8, sz / 11);
-            for (int d = -sz; d < sz; d += step)
-                for (int t = 0; t < sz; ++t) {
-                    const int px = x + d + t, py = yy + sz - t;
-                    if (px >= x + 3 && px < x + sz - 3 && py > yy + 3 && py < yy + sz - 3)
-                        c.Blend(px, py, MakeColor(0xFF, 0xFF, 0xFF), 16);
-                }
-            const int ts = std::max(12, int(sz * (card.badge.size() > 3 ? 0.2f : 0.27f)));
-            const int bw = f.mark->Measure(card.badge, ts);
-            f.mark->Draw(c, x + (sz - bw) / 2 + 2, yy + sz / 2 + int(ts * 0.36f) + 3, card.badge, ts,
-                         Alpha(MakeColor(0, 0, 0), 0x50));
-            f.mark->Draw(c, x + (sz - bw) / 2, yy + sz / 2 + int(ts * 0.36f), card.badge, ts,
-                         Canvas::Mix(card.color, MakeColor(0xFF, 0xFF, 0xFF), 0.6f));
+    const int lo = std::max(0, static_cast<int>(std::floor(anim)) - 2);
+    const int hi = std::min(static_cast<int>(cards.size()) - 1, static_cast<int>(std::ceil(anim)) + 2);
+    // Neighbours first, the focused card last so its glow lies over them.
+    std::vector<int> order;
+    for (int i = lo; i <= hi; ++i) order.push_back(i);
+    std::sort(order.begin(), order.end(), [anim](int a, int b) { return std::fabs(a - anim) > std::fabs(b - anim); });
+    for (int i : order) {
+        if (std::fabs(i - anim) > 1.6f) continue;
+        const CardRect cr = CardAt(i, anim);
+        if (cr.y < kContentTop - 4 || cr.y + cr.s > c.Height() - kHintH - 40) continue;
+        const SystemCard& card = cards[static_cast<std::size_t>(i)];
+        const int r = static_cast<int>(cr.s * 0.14f);
+        const float fade = 0.55f + 0.45f * cr.k;
+        Canvas::FadeScope fs{c, fade};
+        c.SoftShadow(cr.x, cr.y, cr.s, cr.s, r, 16, 8, A(0.5f + 0.2f * cr.k));
+        if (cr.k > 0.05f) {
+            c.Glow(cr.x, cr.y, cr.s, cr.s, r, 44, WithAlpha(card.color, A(0.5f * cr.k)), true, 10);
         }
-        c.RingRoundAA(x, yy, sz, sz, r, std::max(2.0f, size * 0.016f), Canvas::Mix(card.color, MakeColor(0xFF, 0xFF, 0xFF), 0.35f));
-        if (i == selected)
-            c.RingRoundAAWith(x - 5, yy - 5, sz + 10, sz + 10, r + 5, 3.5f, [](float p) { return RingAt(p); });
+        std::shared_ptr<const Picture> pic = Find(g_system_pics, card.id);
+        if (!pic) {
+            pic = DefaultCard(f, card);
+        }
+        const int rest = cr.k > 0.5f ? static_cast<int>(kCardBig) : static_cast<int>(kCardSmall);
+        std::shared_ptr<const Image> face;
+        if (pic) {
+            face = Cached(Key({7, pic->id, u64(rest), card.color}), true, [&] {
+                const Image sq = BuildSquare(pic->img, rest);
+                Canvas tmp;
+                tmp.Resize(rest, rest);
+                if (!sq.opaque) {
+                    const u32 col = card.color;
+                    tmp.FillRoundAAWith(0, 0, rest, rest, 0, [col](float k) {
+                        return Canvas::Mix(Canvas::Mix(col, kWhite, 0.10f), Canvas::Mix(col, kBlack, 0.55f), k);
+                    });
+                }
+                tmp.DrawImage(sq, 0, 0);
+                const int rr = static_cast<int>(rest * 0.14f);
+                tmp.FillRoundAAWith(0, 0, rest, rest * 2 / 5, rr, [](float k) { return White(A(0.12f * (1 - k) * (1 - k))); });
+                tmp.RingRoundAA(0, 0, rest, rest, rr, 1.4f, White(0x30));
+                return CanvasImage(tmp);
+            });
+        }
+        if (face && face->w == cr.s) {
+            c.DrawImage(*face, cr.x, cr.y, r);
+        } else if (face) {
+            c.DrawImageScaled(*face, float(cr.x), float(cr.y), float(cr.s), float(cr.s), r);
+        } else {
+            c.FillRoundGradient(cr.x, cr.y, cr.s, cr.s, r, card.color, Canvas::Mix(card.color, kBlack, 0.6f));
+        }
+        if (i == selected) {
+            c.RingRoundAAWith(cr.x - 6, cr.y - 6, cr.s + 12, cr.s + 12, r + 6, 3.2f,
+                              [t](float p) { return RingAt(p, t * 0.12f); });
+        }
     }
-    // Name, game count and status beside the focused card.
-    const int tx = int(cx + big / 2 + 48);
-    f.bold->Draw(c, tx, int(mid_y - 16), f.bold->Truncate(name, 40, c.Width() - tx - 40), 40, kColText);
-    f.regular->Draw(c, tx, int(mid_y + 22), detail, 19, kColTextDim);
-    Disc(c, tx + 6.0f, mid_y + 52, 5.0f, status_ok ? MakeColor(0x6E, 0xE7, 0xB7) : MakeColor(0xFF, 0xCE, 0x78));
-    f.regular->Draw(c, tx + 20, int(mid_y + 58), status, 16, kColTextDim);
+
+    // Name, game count, status and the picture button beside the focused card.
+    const int tx = CarouselTextX();
+    f.bold->Draw(c, tx, static_cast<int>(mid_y - 18), f.bold->Truncate(text.name, 40, c.Width() - tx - 40), 40, kColText);
+    f.regular->Draw(c, tx, static_cast<int>(mid_y + 20), text.detail, 19, kColTextDim);
+    c.Disc(tx + 6.0f, mid_y + 47, 4.5f, text.status_ok ? MakeColor(0x6E, 0xE7, 0xB7) : MakeColor(0xFF, 0xCE, 0x78));
+    f.regular->Draw(c, tx + 18, static_cast<int>(mid_y + 53), text.status, 16, kColTextDim);
+
+    const Rect b = PictureButton();
+    Glass(c, b.x, b.y, b.w, b.h, b.h / 2, false, 0.7f);
+    const int chip = 24;
+    c.FillRoundAA(b.x + 9, b.y + (b.h - chip) / 2, chip, chip, chip / 2, White(0xEE));
+    const int yw = f.bold->Measure("Y", 13);
+    f.bold->Draw(c, b.x + 9 + (chip - yw) / 2, CenterBaseline(b.y + (b.h - chip) / 2, chip, 13), "Y", 13,
+                 MakeColor(0x1A, 0x18, 0x24));
+    DrawIcon(c, DockIconShape::Picture, float(b.x + 52), float(b.y + b.h / 2), 22, kColText);
+    f.bold->Draw(c, b.x + 70, CenterBaseline(b.y, b.h, 16), text.has_picture ? "Change picture" : "Set a picture", 16,
+                 kColText);
 }
 
-// ---- small pieces --------------------------------------------------------------------------------------
+// ---- panels ------------------------------------------------------------------------------------------------
+
+void DrawScrim(Canvas& c, float alpha) {
+    c.FillRect(0, 0, c.Width(), c.Height(), MakeColor(0x03, 0x03, 0x07, A(0.66f * alpha)));
+}
+
+void DrawPanel(Canvas& c, int x, int y, int w, int h, int r) {
+    Glass(c, x, y, w, h, r, true, 1.0f);
+}
+
+void DrawModal(Canvas& c, int x, int y, int w, int h) {
+    DrawScrim(c, 1.0f);
+    DrawPanel(c, x, y, w, h, 20);
+}
+
+void DrawRow(Canvas& c, int x, int y, int w, int h, bool focused) {
+    const int r = std::min(12, h / 2);
+    if (focused) {
+        c.FillRoundAAWith(x, y, w, h, r, [](float t) { return White(A(0.12f - 0.04f * t)); });
+        c.RingRoundAA(x, y, w, h, r, 1.0f, White(0x22));
+        c.FillRoundGradient(x + 6, y + 8, 4, h - 16, 2, kColAccent, kColAccent2);
+    } else {
+        c.FillRoundAA(x, y, w, h, r, White(0x0A));
+    }
+}
+
+void DrawPill(Canvas& c, int x, int y, int w, int h, bool active) {
+    if (active) {
+        c.Glow(x, y, w, h, h / 2, 12, WithAlpha(kColAccent, 0x40), true, 3);
+        c.FillRoundAAPix(x, y, w, h, h / 2, [](float fx, float) { return Canvas::Mix(kColAccent, MakeColor(0xA8, 0x9E, 0xFF), fx); });
+    } else {
+        c.FillRoundAA(x, y, w, h, h / 2, White(0x10));
+        c.RingRoundAA(x, y, w, h, h / 2, 1.0f, White(0x1A));
+    }
+}
+
+void DrawProgress(Canvas& c, int x, int y, int w, int h, float frac, float t) {
+    frac = std::clamp(frac, 0.0f, 1.0f);
+    c.FillRoundAA(x, y, w, h, h / 2, White(0x16));
+    const int fw = std::max(h, static_cast<int>(w * frac));
+    if (frac <= 0.0f) {
+        return;
+    }
+    const float sweep = std::fmod(t * 0.6f, 1.4f) - 0.2f;
+    c.FillRoundAAPix(x, y, fw, h, h / 2, [fw, w, sweep](float fx, float) {
+        const float gx = fx * fw / std::max(1, w);
+        const u32 base = Canvas::Mix(kColAccent, kColAccent2, gx);
+        const float d = std::fabs(gx - sweep);
+        return Canvas::Mix(base, kWhite, 0.35f * std::max(0.0f, 1.0f - d / 0.12f));
+    });
+}
+
+void DrawSpinner(Canvas& c, float cx, float cy, float r, float t) {
+    constexpr int kDots = 10;
+    for (int i = 0; i < kDots; ++i) {
+        const float a = (i / float(kDots)) * 6.2831853f + t * 5.0f;
+        const float k = (i + 1) / float(kDots);
+        c.Disc(cx + std::cos(a) * r, cy + std::sin(a) * r, 2.0f + 2.2f * k, WithAlpha(RingAt(k * 0.8f), A(0.25f + 0.75f * k)));
+    }
+}
+
+void DrawScrollbar(Canvas& c, int x, int top, int track_h, int thumb_y, int thumb_h) {
+    c.FillRoundAA(x, top, 4, track_h, 2, White(0x12));
+    c.FillRoundGradient(x, thumb_y, 4, thumb_h, 2, kColAccent, kColAccent2);
+}
+
+// ---- small pieces --------------------------------------------------------------------------------------------
 
 int DrawHint(Canvas& c, const Fonts& f, int x, int y, const char* button, const char* label) {
     constexpr int chip_h = 26;
     const int letter_w = f.bold->Measure(button, 14);
     const int chip_w = std::max(chip_h, letter_w + 14);
-    c.FillRoundAA(x, y, chip_w, chip_h, chip_h / 2, MakeColor(0xEC, 0xEA, 0xF4));
+    c.FillRoundAA(x, y, chip_w, chip_h, chip_h / 2, White(0xEE));
     f.bold->Draw(c, x + (chip_w - letter_w) / 2, CenterBaseline(y, chip_h, 14), button, 14, MakeColor(0x1A, 0x18, 0x24));
     const int label_w = f.bold->Draw(c, x + chip_w + 8, CenterBaseline(y, chip_h, 17), label, 17, kColText);
     return chip_w + 8 + label_w;
@@ -529,34 +1246,36 @@ int DrawHint(Canvas& c, const Fonts& f, int x, int y, const char* button, const 
 
 void DrawHintBar(Canvas&) {}
 
-void DrawScrollbar(Canvas& c, int x, int top, int track_h, int thumb_y, int thumb_h) {
-    c.FillRoundAA(x, top, 4, track_h, 2, Alpha(MakeColor(0xFF, 0xFF, 0xFF), 0x14));
-    c.FillRoundAAWith(x, thumb_y, 4, thumb_h, 2, [](float t) { return RingAt(t); });
-}
-
-void DrawToast(Canvas& c, const Fonts& f, std::string_view text, bool error) {
+void DrawToast(Canvas& c, const Fonts& f, std::string_view text, bool error, float alpha) {
+    if (alpha <= 0.01f) {
+        return;
+    }
+    const float e = 1 - (1 - alpha) * (1 - alpha);
+    Canvas::FadeScope fade{c, e};
     const int tw = f.regular->Measure(text, 18);
-    const int w = tw + 48, h = 44;
+    const int w = std::min(c.Width() - 60, tw + 64), h = 46;
     const int x = (c.Width() - w) / 2;
-    const int y = c.Height() - kHintH - h - 58;
-    c.SoftShadow(x, y, w, h, h / 2, 10, 6, 0xB0);
-    c.FillRoundAA(x, y, w, h, h / 2, error ? MakeColor(0x3A, 0x12, 0x18) : MakeColor(0x24, 0x22, 0x30));
-    c.RingRoundAA(x, y, w, h, h / 2, 1.0f, error ? Alpha(kColError, 0x90) : Alpha(MakeColor(0xFF, 0xFF, 0xFF), 0x24));
-    f.regular->Draw(c, x + 24, CenterBaseline(y, h, 18), text, 18, kColText);
+    const int y = c.Height() - kHintH - h - 58 + static_cast<int>(18 * (1 - e));
+    Glass(c, x, y, w, h, h / 2, true, 1.0f);
+    if (error) {
+        c.RingRoundAA(x, y, w, h, h / 2, 1.4f, WithAlpha(kColError, 0xB0));
+    }
+    c.Disc(x + 24.0f, y + h / 2.0f, 5.0f, error ? kColError : kColAccent);
+    f.regular->Draw(c, x + 40, CenterBaseline(y, h, 18), f.regular->Truncate(text, 18, w - 60), 18, kColText);
 }
 
-void DrawEmptyLibrary(Canvas& c, const Fonts& f, std::string_view roms_dir) {
+void DrawEmptyLibrary(Canvas& c, const Fonts& f, std::string_view roms_dir, float t) {
     const int cx = c.Width() / 2;
-    const int top = kContentTop + (c.Height() - kHintH - kContentTop) / 2 - 110;
-    DrawGamepad(c, float(cx), top + 40.0f, 120, kColTextDim, 9);
+    const int top = kContentTop + (c.Height() - kHintH - kContentTop) / 2 - 130;
+    DrawController(c, float(cx), top + 58.0f, 220.0f, MakeColor(0x4A, 0x9E, 0xB8), t);
     auto centred = [&](Font& font, std::string_view s, int y, int size, u32 col) {
         const int w = font.Measure(s, size);
         font.Draw(c, cx - w / 2, y, s, size, col);
     };
-    centred(*f.bold, "No games yet", top + 126, 28, kColText);
-    centred(*f.regular, "Put games in sdmc:/roms/<system>/  (3ds, ds, gba, ps2, n64, snes...)", top + 162, 17, kColTextDim);
+    centred(*f.bold, "No games yet", top + 172, 28, kColText);
+    centred(*f.regular, "Put games in sdmc:/roms/<system>/  (3ds, ds, gba, ps2, n64, snes...)", top + 206, 17, kColTextDim);
     const std::string dir = f.regular->TruncateFront(roms_dir, 17, c.Width() - 120);
-    centred(*f.regular, "3DS games can also go in " + dir, top + 188, 17, kColTextDim);
+    centred(*f.regular, "3DS games can also go in " + dir, top + 232, 17, kColTextDim);
 }
 
 } // namespace SwitchFrontend::Skin

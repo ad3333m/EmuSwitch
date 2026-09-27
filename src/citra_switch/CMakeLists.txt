@@ -38,9 +38,12 @@ add_executable(citra_switch
     menu_data.cpp
     custom_art.cpp
     custom_art.h
+    menu_gfx.cpp
     menu_gfx.h
     menu_skin.cpp
     menu_skin.h
+    menu_skin_art.cpp
+    menu_skin_art.h
     multi_handoff.cpp
     multi_system.cpp
     multi_system.h
