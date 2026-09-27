@@ -2002,7 +2002,10 @@ OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& la
     const float panel_h =
         pad + title_line_h + sep_gap + static_cast<float>(n) * row_h + sep_gap + footer_h + pad;
     const float panel_x0 = std::round((w - panel_w) / 2.0f);
-    const float panel_y0 = std::round((h - panel_h) / 2.0f);
+    // The compact panel keeps to an edge so the screens stay visible.
+    const float panel_y0 = !state.compact     ? std::round((h - panel_h) / 2.0f)
+                           : state.compact_top ? std::round(pad * 0.6f)
+                                               : std::round(h - panel_h - pad * 0.6f);
     const float panel_x1 = panel_x0 + panel_w;
     const float panel_y1 = panel_y0 + panel_h;
 
@@ -2024,11 +2027,37 @@ OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& la
     constexpr std::array<float, 4> c_sel = {1.0f, 1.0f, 1.0f, 1.0f};
     constexpr std::array<float, 4> c_footer = {0.60f, 0.63f, 0.72f, 1.0f};
 
-    // Dim the running game.
-    {
+    // Dim the running game, unless the player is arranging its screens.
+    if (!state.compact) {
         const u32 s = builder.VertexCount();
         builder.AddRect(0.0f, 0.0f, w, h);
         emit(c_dim, s);
+    }
+    // Outlines around the two screens, the one being edited in the highlight colour. Canvas
+    // pixels are framebuffer pixels unless the overlay is rotated, so only then.
+    if (state.outline_screen >= 0 && canvas.rotation == 0) {
+        const float t = std::max(2.0f, std::round(em / 7.0f));
+        const auto outline = [&](const Common::Rectangle<u32>& r) {
+            const float x0 = static_cast<float>(r.left), y0 = static_cast<float>(r.top);
+            const float x1 = static_cast<float>(r.right), y1 = static_cast<float>(r.bottom);
+            builder.AddRect(x0, y0, x1, y0 + t);
+            builder.AddRect(x0, y1 - t, x1, y1);
+            builder.AddRect(x0, y0 + t, x0 + t, y1 - t);
+            builder.AddRect(x1 - t, y0 + t, x1, y1 - t);
+        };
+        constexpr std::array<float, 4> c_other = {1.0f, 1.0f, 1.0f, 0.45f};
+        constexpr std::array<float, 4> c_editing = {0.36f, 0.91f, 0.87f, 1.0f};
+        const bool top_first = state.outline_screen == 1;
+        {
+            const u32 s = builder.VertexCount();
+            outline(top_first ? layout.top_screen : layout.bottom_screen);
+            emit(c_other, s);
+        }
+        {
+            const u32 s = builder.VertexCount();
+            outline(top_first ? layout.bottom_screen : layout.top_screen);
+            emit(c_editing, s);
+        }
     }
     {
         const u32 s = builder.VertexCount();

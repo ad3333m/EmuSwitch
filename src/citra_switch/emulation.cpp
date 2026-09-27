@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <fmt/format.h>
@@ -104,7 +105,7 @@ struct ScreenLayoutPreset {
     const char* name;
 };
 
-constexpr std::array<ScreenLayoutPreset, 11> s_layout_presets{{
+constexpr std::array<ScreenLayoutPreset, 12> s_layout_presets{{
     {Settings::LayoutOption::Default, false, false, false,
      Settings::SmallScreenPosition::BottomRight, "Vertical stack"},
     {Settings::LayoutOption::SideScreen, false, false, false,
@@ -127,7 +128,17 @@ constexpr std::array<ScreenLayoutPreset, 11> s_layout_presets{{
      Settings::SmallScreenPosition::BottomRight, "Bottom screen overlay"},
     {Settings::LayoutOption::OverlayScreen, false, false, false,
      Settings::SmallScreenPosition::TopRight, "Big top, small bottom in top right"},
+    // Wherever the player put the screens in the quick menu's editor.
+    {Settings::LayoutOption::CustomLayout, false, false, false,
+     Settings::SmallScreenPosition::TopRight, "Custom"},
 }};
+
+constexpr std::size_t kCustomPresetIndex = 11;
+
+// Written by the quick menu's editor on the main thread, read by the emulation thread.
+std::mutex s_custom_layout_mutex;
+SwitchFrontend::CustomScreenLayout s_custom_layout = SwitchFrontend::DefaultCustomScreenLayout();
+bool s_start_in_custom_layout = false;
 
 // Anchors the overlaid screen can snap to.
 constexpr std::array<const char*, 8> s_overlay_position_names{
@@ -151,6 +162,13 @@ std::atomic<std::uint32_t> s_layout_cycle_mask{(1u << s_layout_presets.size()) -
 // Applies the preset at s_layout_index and requests a framebuffer relayout.
 void ApplyCurrentLayout() {
     const ScreenLayoutPreset& preset = s_layout_presets[s_layout_index];
+    // The choice sticks for the next game only when it is the custom one.
+    s_start_in_custom_layout = s_layout_index == kCustomPresetIndex;
+    if (preset.layout == Settings::LayoutOption::CustomLayout) {
+        unsigned w = 0, h = 0;
+        SwitchFrontend::GetWindowSize(w, h);
+        SwitchFrontend::ApplyCustomLayoutPixels(w, h);
+    }
     Settings::values.layout_option = preset.layout;
     Settings::values.swap_screen = preset.swap_screen;
     Settings::values.upright_screen = preset.upright_screen;
@@ -299,6 +317,13 @@ void EmuThread(std::string path) {
     LOG_INFO(Frontend, "Emulation started (program id {:016X})", program_id);
     while (!s_stop) {
         if (s_layout_update_pending.exchange(false, std::memory_order_acq_rel)) {
+            // The custom layout is kept as fractions: redo its pixels for the current output,
+            // which changes size when the console is docked or undocked.
+            if (Settings::values.layout_option.GetValue() == Settings::LayoutOption::CustomLayout) {
+                unsigned w = 0, h = 0;
+                GetWindowSize(w, h);
+                ApplyCustomLayoutPixels(w, h);
+            }
             system.GPU().UpdateCurrentFramebufferLayout();
             Core::PerfStats::game_frames_updated = true;
         }
@@ -548,6 +573,92 @@ const char* CurrentScreenLayoutName() {
 
 int GetScreenLayoutCount() {
     return static_cast<int>(s_layout_presets.size());
+}
+
+CustomScreenLayout DefaultCustomScreenLayout() {
+    return {{0.0f, 0.1f, 0.75f}, {0.75f, 0.1f, 0.25f}};
+}
+
+CustomScreenLayout GetCustomScreenLayout() {
+    std::scoped_lock lock{s_custom_layout_mutex};
+    return s_custom_layout;
+}
+
+void SetCustomScreenLayout(const CustomScreenLayout& layout) {
+    {
+        std::scoped_lock lock{s_custom_layout_mutex};
+        s_custom_layout = layout;
+    }
+    if (Core::System::GetInstance().IsPoweredOn() &&
+        Settings::values.layout_option.GetValue() == Settings::LayoutOption::CustomLayout) {
+        s_layout_update_pending.store(true, std::memory_order_release);
+    }
+}
+
+void UseCustomScreenLayout() {
+    s_layout_index = kCustomPresetIndex;
+    ApplyCurrentLayout();
+}
+
+int GetScreenLayoutIndex() {
+    return static_cast<int>(s_layout_index);
+}
+
+void SetScreenLayoutIndex(int index) {
+    if (index < 0 || index >= static_cast<int>(s_layout_presets.size())) {
+        return;
+    }
+    s_layout_index = static_cast<std::size_t>(index);
+    ApplyCurrentLayout();
+}
+
+bool IsCustomScreenLayoutActive() {
+    return Settings::values.layout_option.GetValue() == Settings::LayoutOption::CustomLayout;
+}
+
+bool GetStartInCustomLayout() {
+    return s_start_in_custom_layout;
+}
+
+void SetStartInCustomLayout(bool enabled) {
+    s_start_in_custom_layout = enabled;
+}
+
+void PrepareBootScreenLayout() {
+    if (s_start_in_custom_layout) {
+        s_layout_index = kCustomPresetIndex;
+        const ScreenLayoutPreset& preset = s_layout_presets[s_layout_index];
+        Settings::values.layout_option = preset.layout;
+        Settings::values.swap_screen = preset.swap_screen;
+        Settings::values.upright_screen = preset.upright_screen;
+        Settings::values.upright_screen_flipped = preset.upright_flipped;
+    }
+}
+
+void ApplyCustomLayoutPixels(unsigned w, unsigned h) {
+    if (w == 0 || h == 0) {
+        w = 1280;
+        h = 720;
+    }
+    // Screens keep their own shape: 400x240 on top, 320x240 below.
+    const auto place = [w, h](const CustomScreenRect& r, float aspect, Settings::Setting<u16>& sx,
+                              Settings::Setting<u16>& sy, Settings::Setting<u16>& sw,
+                              Settings::Setting<u16>& sh) {
+        const float pw = std::clamp(r.w, 0.05f, 1.0f) * static_cast<float>(w);
+        const float ph = std::min(pw * aspect, static_cast<float>(h));
+        const float px = std::clamp(r.x * static_cast<float>(w), 0.0f, static_cast<float>(w) - pw);
+        const float py = std::clamp(r.y * static_cast<float>(h), 0.0f, static_cast<float>(h) - ph);
+        sx = static_cast<u16>(px + 0.5f);
+        sy = static_cast<u16>(py + 0.5f);
+        sw = static_cast<u16>(pw + 0.5f);
+        sh = static_cast<u16>(ph + 0.5f);
+    };
+    const CustomScreenLayout layout = GetCustomScreenLayout();
+    auto& v = Settings::values;
+    place(layout.top, 240.0f / 400.0f, v.custom_top_x, v.custom_top_y, v.custom_top_width,
+          v.custom_top_height);
+    place(layout.bottom, 240.0f / 320.0f, v.custom_bottom_x, v.custom_bottom_y,
+          v.custom_bottom_width, v.custom_bottom_height);
 }
 
 const char* GetScreenLayoutName(int index) {

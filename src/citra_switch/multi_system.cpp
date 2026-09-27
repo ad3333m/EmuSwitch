@@ -13,13 +13,16 @@
 #include <cstdint>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <dirent.h>
 #include <functional>
 #include <mutex>
 #include <sys/stat.h>
 #include <thread>
 #include <unordered_set>
+#include <utility>
 
+#include "citra_switch/config.h"
 #include "citra_switch/emu_zip.h"
 #include "citra_switch/menu_data.h"
 #include "common/logging/log.h"
@@ -264,6 +267,39 @@ void EnsureOption(const std::string& file, const char* key, const char* value) {
     WriteLines(file.c_str(), lines);
 }
 
+// Sets `key = "value"` in a RetroArch options file, replacing what was there.
+void SetOption(const std::string& file, const char* key, const char* value) {
+    std::vector<std::string> lines = ReadLines(file.c_str());
+    const std::string line = std::string(key) + " = \"" + value + "\"";
+    bool found = false;
+    for (std::string& l : lines) {
+        const std::string t = Trim(l);
+        if (t.rfind(key, 0) == 0 && t.size() > std::strlen(key) &&
+            (t[std::strlen(key)] == ' ' || t[std::strlen(key)] == '=')) {
+            if (l == line) return;
+            l = line;
+            found = true;
+        }
+    }
+    if (!found) lines.push_back(line);
+    const size_t slash = file.find_last_of('/');
+    MakeDirs(file.substr(0, slash));
+    WriteLines(file.c_str(), lines);
+}
+
+// The DS screen arrangement picked in Settings > Layout, handed to DeSmuME before it starts.
+void ApplyDsOptions() {
+    const std::pair<const char*, const char*> options[] = {
+        {"desmume_screens_layout", DsScreenLayoutValue(GetDsScreenLayout())},
+        {"desmume_screens_gap", DsScreenGapValue(GetDsScreenGap())},
+    };
+    for (const auto& [key, value] : options) {
+        if (!value) continue;
+        SetOption("sdmc:/retroarch/config/DeSmuME/DeSmuME.opt", key, value);
+        SetOption("sdmc:/retroarch/retroarch-core-options.cfg", key, value);
+    }
+}
+
 // Dreamcast runs on Flycast's built-in BIOS, so no dc_boot.bin is needed.
 void SetupRetroArchOptions() {
     EnsureOption("sdmc:/retroarch/config/Flycast/Flycast.opt", "flycast_hle_bios", "enabled");
@@ -411,6 +447,7 @@ bool Launch(const std::string& path, std::string& error) {
         error = "PS2 needs a BIOS: copy your BIOS .zip or .bin into sdmc:/roms/ps2/ and reopen EmuSwitch";
         return false;
     }
+    if (std::string(sys.id) == "ds") ApplyDsOptions();
     // hbloader opens the .nro by its SD path, without the sdmc: prefix.
     const std::string sd = nro.substr(5);
     std::string argv = "\"" + sd + "\"";

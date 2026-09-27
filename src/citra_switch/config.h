@@ -79,6 +79,10 @@ void SetMenuRotation(int degrees);
 bool IsMenuInputRotated();
 void SetMenuInputRotated(bool enabled);
 
+// Whether the launcher offers the buttons that change system and game pictures.
+bool IsPictureEditingEnabled();
+void SetPictureEditingEnabled(bool enabled);
+
 // GitHub updater preferences.
 UpdateChannel GetUpdateChannel();
 void SetUpdateChannel(UpdateChannel channel);
@@ -209,6 +213,54 @@ int GetScreenLayoutCount();
 
 // The display name of preset `index` or "" if out of range.
 const char* GetScreenLayoutName(int index);
+
+// The preset the running game shows, and switching to one by index.
+int GetScreenLayoutIndex();
+void SetScreenLayoutIndex(int index);
+
+// A screen's place in the custom layout as fractions of the output: its left edge, top edge
+// and width. Its height follows from the screen's shape, so it never stretches.
+struct CustomScreenRect {
+    float x;
+    float y;
+    float w;
+};
+struct CustomScreenLayout {
+    CustomScreenRect top;
+    CustomScreenRect bottom;
+};
+
+// A large top screen with the bottom one beside it.
+CustomScreenLayout DefaultCustomScreenLayout();
+CustomScreenLayout GetCustomScreenLayout();
+// Stores the layout and, if a game is showing it, moves the screens there right away.
+void SetCustomScreenLayout(const CustomScreenLayout& layout);
+// Switches the running game to the custom layout (and remembers it for the next game).
+void UseCustomScreenLayout();
+bool IsCustomScreenLayoutActive();
+// Whether games start in the custom layout.
+bool GetStartInCustomLayout();
+void SetStartInCustomLayout(bool enabled);
+// Picks the layout a game starts in. Call before the game's window is made.
+void PrepareBootScreenLayout();
+// Turns the custom layout's fractions into the core's pixel rects for a w x h output.
+void ApplyCustomLayoutPixels(unsigned w, unsigned h);
+// The size the game's output is being drawn at.
+void GetWindowSize(unsigned& w, unsigned& h);
+
+// How DS games (the DeSmuME core) arrange their screens, set when a DS game starts.
+// 0 leaves whatever RetroArch has; the rest index DsScreenLayoutName / DsScreenGapName.
+int GetDsScreenLayout();
+void SetDsScreenLayout(int layout);
+int GetDsScreenGap();
+void SetDsScreenGap(int gap);
+int DsScreenLayoutCount();
+const char* DsScreenLayoutName(int layout);
+int DsScreenGapCount();
+const char* DsScreenGapName(int gap);
+// The DeSmuME option values for them, or null for "leave it".
+const char* DsScreenLayoutValue(int layout);
+const char* DsScreenGapValue(int gap);
 
 // Bitmask of presets included in R3's cycle (bit i = preset i).
 std::uint32_t GetLayoutCycleMask();

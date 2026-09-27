@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdio>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -71,6 +73,33 @@ std::string s_camera_image;
 SwitchFrontend::CameraTarget s_camera_target = SwitchFrontend::CameraTarget::All;
 int s_menu_rotation = 0;
 bool s_menu_input_rotated = false;
+bool s_picture_editing = true;
+int s_ds_screen_layout = 0;
+int s_ds_screen_gap = 0;
+
+// DS screen arrangements, by their names here and their DeSmuME option values.
+struct DsChoice {
+    const char* name;
+    const char* value;
+};
+constexpr std::array<DsChoice, 9> kDsLayouts{{
+    {"RetroArch's choice", nullptr},
+    {"Top / bottom", "top/bottom"},
+    {"Bottom / top", "bottom/top"},
+    {"Side by side", "left/right"},
+    {"Side by side, swapped", "right/left"},
+    {"Top screen only", "top only"},
+    {"Bottom screen only", "bottom only"},
+    {"Big top, small bottom", "hybrid/top"},
+    {"Big bottom, small top", "hybrid/bottom"},
+}};
+constexpr std::array<DsChoice, 5> kDsGaps{{
+    {"RetroArch's choice", nullptr},
+    {"None", "0"},
+    {"Thin", "5"},
+    {"Wide", "64"},
+    {"Like a real DS", "90"},
+}};
 SwitchFrontend::UpdateChannel s_update_channel = SwitchFrontend::UpdateChannel::Stable;
 std::string s_dismissed_update_tag;
 std::string s_last_seen_version;
@@ -241,6 +270,36 @@ private:
         SwitchFrontend::ApplyButtonMappings();
 
         launch_count = config->GetInteger("Switch", "launch_count", 0) + 1;
+
+        ReadCustomLayout();
+    }
+
+    // "x, y, width" as fractions of the output; anything unreadable keeps the default.
+    static SwitchFrontend::CustomScreenRect ParseRect(const std::string& text,
+                                                      SwitchFrontend::CustomScreenRect fallback) {
+        SwitchFrontend::CustomScreenRect r{};
+        if (std::sscanf(text.c_str(), " %f , %f , %f", &r.x, &r.y, &r.w) != 3 ||
+            !std::isfinite(r.x) || !std::isfinite(r.y) || !std::isfinite(r.w) || r.w <= 0.0f) {
+            return fallback;
+        }
+        r.x = std::clamp(r.x, 0.0f, 1.0f);
+        r.y = std::clamp(r.y, 0.0f, 1.0f);
+        r.w = std::clamp(r.w, 0.05f, 1.0f);
+        return r;
+    }
+
+    static std::string RectText(const SwitchFrontend::CustomScreenRect& r) {
+        return fmt::format("{:.4f}, {:.4f}, {:.4f}", r.x, r.y, r.w);
+    }
+
+    void ReadCustomLayout() {
+        const SwitchFrontend::CustomScreenLayout def = SwitchFrontend::DefaultCustomScreenLayout();
+        SwitchFrontend::CustomScreenLayout layout;
+        layout.top = ParseRect(config->Get("Switch", "custom_layout_top", ""), def.top);
+        layout.bottom = ParseRect(config->Get("Switch", "custom_layout_bottom", ""), def.bottom);
+        SwitchFrontend::SetCustomScreenLayout(layout);
+        SwitchFrontend::SetStartInCustomLayout(
+            config->GetBoolean("Switch", "start_in_custom_layout", false));
     }
 
     std::string BuildINI() const {
@@ -291,6 +350,14 @@ private:
             out += "launch_count = " + std::to_string(launch_count) + '\n';
             out += "# Which one-time default changes this config has had.\n";
             out += "defaults_version = " + std::to_string(defaults_version) + '\n';
+            const SwitchFrontend::CustomScreenLayout layout = SwitchFrontend::GetCustomScreenLayout();
+            out += "# Custom Screen Layout (quick menu > Display): left, top and width of each\n";
+            out += "# screen as fractions of the display.\n";
+            out += "custom_layout_top = " + RectText(layout.top) + '\n';
+            out += "custom_layout_bottom = " + RectText(layout.bottom) + '\n';
+            out += "# Games start in the custom layout.\n";
+            out += std::string{"start_in_custom_layout = "} +
+                   (SwitchFrontend::GetStartInCustomLayout() ? "true" : "false") + '\n';
         }
         {
             std::string& out = section("Camera");
@@ -489,6 +556,54 @@ bool IsMenuInputRotated() {
 
 void SetMenuInputRotated(bool enabled) {
     s_menu_input_rotated = enabled;
+}
+
+bool IsPictureEditingEnabled() {
+    return s_picture_editing;
+}
+
+void SetPictureEditingEnabled(bool enabled) {
+    s_picture_editing = enabled;
+}
+
+int GetDsScreenLayout() {
+    return s_ds_screen_layout;
+}
+
+void SetDsScreenLayout(int layout) {
+    s_ds_screen_layout = std::clamp(layout, 0, DsScreenLayoutCount() - 1);
+}
+
+int GetDsScreenGap() {
+    return s_ds_screen_gap;
+}
+
+void SetDsScreenGap(int gap) {
+    s_ds_screen_gap = std::clamp(gap, 0, DsScreenGapCount() - 1);
+}
+
+int DsScreenLayoutCount() {
+    return static_cast<int>(kDsLayouts.size());
+}
+
+const char* DsScreenLayoutName(int layout) {
+    return layout >= 0 && layout < DsScreenLayoutCount() ? kDsLayouts[layout].name : "";
+}
+
+const char* DsScreenLayoutValue(int layout) {
+    return layout >= 0 && layout < DsScreenLayoutCount() ? kDsLayouts[layout].value : nullptr;
+}
+
+int DsScreenGapCount() {
+    return static_cast<int>(kDsGaps.size());
+}
+
+const char* DsScreenGapName(int gap) {
+    return gap >= 0 && gap < DsScreenGapCount() ? kDsGaps[gap].name : "";
+}
+
+const char* DsScreenGapValue(int gap) {
+    return gap >= 0 && gap < DsScreenGapCount() ? kDsGaps[gap].value : nullptr;
 }
 
 UpdateChannel GetUpdateChannel() {

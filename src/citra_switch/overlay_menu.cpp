@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -135,6 +137,89 @@ int s_home_slot = 0;
 std::vector<FileEntry> s_amiibos;
 std::vector<FileEntry> s_camera_images;
 bool s_cheats_dirty = false;
+
+// The Custom Screen Layout editor, which takes the overlay over while it runs: the game stays
+// visible behind a small panel and follows every change.
+bool s_edit = false;
+int s_edit_screen = 0; // 0: top screen, 1: bottom screen
+CustomScreenLayout s_edit_backup{};
+int s_edit_prev_preset = 0;
+std::chrono::steady_clock::time_point s_edit_last{};
+
+// Height over width of each 3DS screen.
+constexpr float kTopAspect = 240.0f / 400.0f;
+constexpr float kBottomAspect = 240.0f / 320.0f;
+
+float ScreenAspect(int screen) {
+    return screen == 0 ? kTopAspect : kBottomAspect;
+}
+
+// Width over height of the game's output.
+float OutputAspect() {
+    unsigned w = 0, h = 0;
+    GetWindowSize(w, h);
+    return w > 0 && h > 0 ? static_cast<float>(w) / static_cast<float>(h) : 16.0f / 9.0f;
+}
+
+// A screen's height as a fraction of the output's height.
+float HeightFraction(const CustomScreenRect& r, float aspect, float out_aspect) {
+    return r.w * out_aspect * aspect;
+}
+
+// Keeps a screen whole and on the display.
+void ClampRect(CustomScreenRect& r, float aspect, float out_aspect) {
+    const float max_w = std::min(1.0f, 1.0f / (out_aspect * aspect));
+    r.w = std::clamp(r.w, 0.1f, max_w);
+    r.x = std::clamp(r.x, 0.0f, 1.0f - r.w);
+    r.y = std::clamp(r.y, 0.0f, std::max(0.0f, 1.0f - HeightFraction(r, aspect, out_aspect)));
+}
+
+// A stick axis with a deadzone and a curve that leaves room for small moves.
+float StickAxis(float v) {
+    constexpr float kDeadzone = 0.18f;
+    const float a = std::abs(v);
+    if (a < kDeadzone) {
+        return 0.0f;
+    }
+    const float t = std::min(1.0f, (a - kDeadzone) / (1.0f - kDeadzone));
+    return std::copysign(t * t, v);
+}
+
+CustomScreenRect& EditedRect(CustomScreenLayout& layout) {
+    return s_edit_screen == 0 ? layout.top : layout.bottom;
+}
+
+// "640x384 at 0,72" in output pixels, matching how the core places it.
+std::string RectSummary(const CustomScreenRect& r, float aspect) {
+    unsigned w = 0, h = 0;
+    GetWindowSize(w, h);
+    const float pw = r.w * static_cast<float>(w);
+    const float ph = std::min(pw * aspect, static_cast<float>(h));
+    const auto px = [](float v) { return std::to_string(static_cast<int>(std::lround(v))); };
+    return px(pw) + "x" + px(ph) + " at " + px(r.x * static_cast<float>(w)) + "," +
+           px(r.y * static_cast<float>(h));
+}
+
+void RepaintEditor() {
+    const CustomScreenLayout layout = GetCustomScreenLayout();
+    const float out_aspect = OutputAspect();
+    const CustomScreenRect& edited = s_edit_screen == 0 ? layout.top : layout.bottom;
+
+    VideoCore::OverlayMenuState state;
+    state.visible = true;
+    state.compact = true;
+    // The panel keeps to whichever half the screen being moved isn't in.
+    state.compact_top =
+        edited.y + HeightFraction(edited, ScreenAspect(s_edit_screen), out_aspect) / 2.0f > 0.5f;
+    state.outline_screen = s_edit_screen;
+    state.title = "Custom Screen Layout";
+    state.hint = "Stick Move   L/R Size   ZL Slow   Y Other screen   X Reset   A Save   B Cancel";
+    state.items.push_back({"Top screen", RectSummary(layout.top, kTopAspect), false, false});
+    state.items.push_back(
+        {"Bottom screen", RectSummary(layout.bottom, kBottomAspect), false, false});
+    state.selected = s_edit_screen;
+    VideoCore::SetOverlayMenuState(state);
+}
 
 // Slot status strings.
 // Refreshed on demand so repaints don't stat the state directory.
@@ -566,6 +651,10 @@ const char* HintFor(Page page) {
 }
 
 void Repaint() {
+    if (s_edit) {
+        RepaintEditor();
+        return;
+    }
     const Page page = CurrentPage();
     VideoCore::OverlayMenuState state;
     state.visible = s_open.load(std::memory_order_relaxed);
@@ -627,6 +716,7 @@ void SetPauseInQuickMenu(bool enabled) {
 }
 
 void OpenQuickMenu() {
+    s_edit = false;
     s_page = static_cast<int>(Page::Home);
     s_selected = 0;
     s_scroll = 0;
@@ -646,6 +736,8 @@ void OpenQuickMenu() {
 }
 
 void CloseQuickMenu() {
+    // Closing the menu mid-edit keeps the screens where they are.
+    s_edit = false;
     const bool was_open = s_open.exchange(false, std::memory_order_relaxed);
     SetEmulationPaused(false);
     VideoCore::OverlayMenuState state;
@@ -743,10 +835,113 @@ bool StepSubList(const QuickMenuNav& nav) {
     return true;
 }
 
+void EndLayoutEdit(const char* toast) {
+    s_edit = false;
+    VideoCore::PostOverlayToast(toast);
+    RebuildRows();
+    Repaint();
+}
+
+// One frame of the layout editor. The stick moves the chosen screen for as long as it's held,
+// L/R (or the right stick) size it around its centre, and the game follows along.
+void UpdateLayoutEditor(const QuickMenuNav& nav) {
+    const auto now = std::chrono::steady_clock::now();
+    const float dt =
+        std::clamp(std::chrono::duration<float>(now - s_edit_last).count(), 0.0f, 0.05f);
+    s_edit_last = now;
+
+    if (nav.cancel) {
+        SetCustomScreenLayout(s_edit_backup);
+        SetScreenLayoutIndex(s_edit_prev_preset);
+        EndLayoutEdit("Screen layout unchanged");
+        return;
+    }
+    if (nav.confirm) {
+        // Games start in the custom layout from now on, until another layout is picked.
+        UseCustomScreenLayout();
+        EndLayoutEdit("Custom screen layout saved");
+        return;
+    }
+
+    CustomScreenLayout layout = GetCustomScreenLayout();
+    bool changed = false;
+    bool repaint = false;
+    if (nav.alt2) {
+        s_edit_screen ^= 1;
+        repaint = true;
+    }
+    if (nav.alt) {
+        layout = DefaultCustomScreenLayout();
+        changed = true;
+    }
+
+    const float out_aspect = OutputAspect();
+    const float aspect = ScreenAspect(s_edit_screen);
+    const float slow = nav.hold_zl ? 0.25f : 1.0f;
+    // Output widths per second: the stick is quick, the d-pad slow enough to line things up.
+    constexpr float kStickSpeed = 0.6f;
+    constexpr float kPadSpeed = 0.08f;
+    const float move_x = StickAxis(nav.stick_x) * kStickSpeed +
+                         ((nav.hold_right ? 1.0f : 0.0f) - (nav.hold_left ? 1.0f : 0.0f)) * kPadSpeed;
+    const float move_y = -StickAxis(nav.stick_y) * kStickSpeed +
+                         ((nav.hold_down ? 1.0f : 0.0f) - (nav.hold_up ? 1.0f : 0.0f)) * kPadSpeed;
+    const float grow = std::clamp(
+        StickAxis(nav.rstick_y) + (nav.hold_r ? 1.0f : 0.0f) - (nav.hold_l ? 1.0f : 0.0f), -1.0f,
+        1.0f);
+
+    CustomScreenRect& r = EditedRect(layout);
+    const CustomScreenRect before = r;
+    if (grow != 0.0f) {
+        const float cx = r.x + r.w / 2.0f;
+        const float cy = r.y + HeightFraction(r, aspect, out_aspect) / 2.0f;
+        // About 1.8x bigger per second held.
+        r.w = std::clamp(r.w * std::exp(grow * 0.6f * slow * dt), 0.1f, 1.0f);
+        r.x = cx - r.w / 2.0f;
+        r.y = cy - HeightFraction(r, aspect, out_aspect) / 2.0f;
+    }
+    // The same speed in pixels both ways, so y (a fraction of the height) moves further.
+    r.x += move_x * slow * dt;
+    r.y += move_y * slow * dt * out_aspect;
+    ClampRect(r, aspect, out_aspect);
+    changed |= r.x != before.x || r.y != before.y || r.w != before.w;
+
+    if (changed) {
+        SetCustomScreenLayout(layout);
+    }
+    if (changed || repaint) {
+        RepaintEditor();
+    }
+}
+
 } // namespace
+
+void BeginCustomLayoutEdit() {
+    if (!IsQuickMenuOpen() || !Core::System::GetInstance().IsPoweredOn()) {
+        return;
+    }
+    s_edit_backup = GetCustomScreenLayout();
+    s_edit_prev_preset = GetScreenLayoutIndex();
+    s_edit_screen = 0;
+    s_edit_last = std::chrono::steady_clock::now();
+
+    // A layout saved on a differently shaped display may hang off this one.
+    CustomScreenLayout layout = s_edit_backup;
+    const float out_aspect = OutputAspect();
+    ClampRect(layout.top, kTopAspect, out_aspect);
+    ClampRect(layout.bottom, kBottomAspect, out_aspect);
+    SetCustomScreenLayout(layout);
+    UseCustomScreenLayout();
+
+    s_edit = true;
+    RepaintEditor();
+}
 
 QuickMenuAction UpdateQuickMenu(const QuickMenuNav& nav) {
     if (!IsQuickMenuOpen()) {
+        return QuickMenuAction::None;
+    }
+    if (s_edit) {
+        UpdateLayoutEditor(nav);
         return QuickMenuAction::None;
     }
 

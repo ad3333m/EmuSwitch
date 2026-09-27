@@ -206,6 +206,7 @@ u64 PollInput(PadState& pad, SwitchFrontend::InputState& state) {
 }
 
 void RunGame(PadState& pad, const std::string& rom) {
+    SwitchFrontend::PrepareBootScreenLayout();
     if (!SwitchFrontend::CreateWindow(nwindowGetDefault())) {
         std::printf("EmuWindow no worky.\n");
         SwitchFrontend::SetMenuNotice("Couldn't create the render window");
@@ -269,6 +270,18 @@ void RunGame(PadState& pad, const std::string& rom) {
                     .tab_next = (pressed & HidNpadButton_R) != 0,
                     .page_prev = (pressed & HidNpadButton_ZL) != 0,
                     .page_next = (pressed & HidNpadButton_ZR) != 0,
+                    .hold_up = (held & HidNpadButton_Up) != 0,
+                    .hold_down = (held & HidNpadButton_Down) != 0,
+                    .hold_left = (held & HidNpadButton_Left) != 0,
+                    .hold_right = (held & HidNpadButton_Right) != 0,
+                    .hold_l = (held & HidNpadButton_L) != 0,
+                    .hold_r = (held & HidNpadButton_R) != 0,
+                    .hold_zl = (held & HidNpadButton_ZL) != 0,
+                    .hold_zr = (held & HidNpadButton_ZR) != 0,
+                    .stick_x = static_cast<float>(padGetStickPos(&pad, 0).x) / 32767.0f,
+                    .stick_y = static_cast<float>(padGetStickPos(&pad, 0).y) / 32767.0f,
+                    .rstick_x = static_cast<float>(padGetStickPos(&pad, 1).x) / 32767.0f,
+                    .rstick_y = static_cast<float>(padGetStickPos(&pad, 1).y) / 32767.0f,
                 };
                 if (SwitchFrontend::UpdateQuickMenu(nav) ==
                     SwitchFrontend::QuickMenuAction::ExitGame) {

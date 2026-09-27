@@ -163,6 +163,7 @@ struct CarouselText {
     std::string_view status;
     bool status_ok = true;
     bool has_picture = false;
+    bool picture_button = true; // offer "Change picture"
 };
 // Draws the carousel with `anim` the (fractional) focused index; `accent` is the eased
 // colour of the focused system.

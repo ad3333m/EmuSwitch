@@ -123,6 +123,11 @@ EmuWindow_Switch::EmuWindow_Switch(void* native_window, bool use_egl, bool is_se
     window_info.render_surface = native_window;
 
     requested_size.store(PackSize(window_width, window_height), std::memory_order_relaxed);
+    // The custom layout lives as fractions of the output; give the core its pixels first.
+    if (Settings::values.layout_option.GetValue() == Settings::LayoutOption::CustomLayout) {
+        SwitchFrontend::ApplyCustomLayoutPixels(static_cast<unsigned>(window_width),
+                                                static_cast<unsigned>(window_height));
+    }
     UpdateCurrentFramebufferLayout(window_width, window_height);
     is_valid = true;
 }
@@ -308,6 +313,17 @@ namespace SwitchFrontend {
 
 bool DisplayFollowsDockState() {
     return Settings::GetWorkingGraphicsAPI() == Settings::GraphicsAPI::Vulkan;
+}
+
+void GetWindowSize(unsigned& w, unsigned& h) {
+    if (s_window) {
+        const auto [tw, th] = s_window->GetTargetFramebufferSize();
+        w = tw;
+        h = th;
+        return;
+    }
+    w = 1280;
+    h = 720;
 }
 
 bool CreateWindow(void* native_window) {

@@ -1414,10 +1414,11 @@ private:
                 details_open = true;
             }
         }
-        if (count > 0 && (down & HidNpadButton_L)) {
+        if (count > 0 && (down & HidNpadButton_L) && IsPictureEditingEnabled()) {
             PickGamePicture(games[filtered[selected]]);
         }
-        if (count > 0 && (down & HidNpadButton_R) && Skin::HasGameImage(games[filtered[selected]].path)) {
+        if (count > 0 && (down & HidNpadButton_R) && IsPictureEditingEnabled() &&
+            Skin::HasGameImage(games[filtered[selected]].path)) {
             const std::string err = Art::SetGameArt(games[filtered[selected]], "");
             ShowNotice(err.empty() ? "Picture removed" : err, !err.empty());
         }
@@ -2701,7 +2702,7 @@ private:
         } else if (tab == Tab::Systems) {
             // Tap a card to bring it forward, tap the focused one to see its games, or tap the
             // picture button.
-            if (Skin::CarouselPictureButtonHit(canvas, tx, ty)) {
+            if (IsPictureEditingEnabled() && Skin::CarouselPictureButtonHit(canvas, tx, ty)) {
                 PickSystemPicture();
                 return;
             }
@@ -3860,7 +3861,9 @@ private:
             hx += DrawHint(c, hx, hy, "A", "Play") + 22;
             hx += DrawHint(c, hx, hy, "X", "Search") + 22;
             hx += DrawHint(c, hx, hy, "Y", "Refresh") + 22;
-            hx += DrawHint(c, hx, hy, "L", "Picture") + 22;
+            if (IsPictureEditingEnabled()) {
+                hx += DrawHint(c, hx, hy, "L", "Picture") + 22;
+            }
             hx += DrawHint(c, hx, hy, "+", "Details") + 22;
             if (system_filter != kNoSystemFilter) {
                 hx += DrawHint(c, hx, hy, "B", "All games") + 22;
@@ -3933,10 +3936,10 @@ private:
             OpenSystemGames();
             return;
         }
-        if (down & HidNpadButton_Y) {
+        if ((down & HidNpadButton_Y) && IsPictureEditingEnabled()) {
             PickSystemPicture();
         }
-        if ((down & HidNpadButton_X) && Skin::HasSystemImage(id)) {
+        if ((down & HidNpadButton_X) && IsPictureEditingEnabled() && Skin::HasSystemImage(id)) {
             const std::string err = Art::SetSystemArt(id, "");
             ShowNotice(err.empty() ? systems[systems_sel].name + " back to its default look" : err, !err.empty());
         }
@@ -3964,6 +3967,7 @@ private:
         text.status = custom ? "Showing your picture" : "Default look";
         text.status_ok = true;
         text.has_picture = custom;
+        text.picture_button = IsPictureEditingEnabled();
         Skin::DrawSystemsCarousel(c, SkinFonts(), cards, systems_anim, systems_sel, text, SystemsAccent(), AnimTime());
         if (focus == Focus::Rail) {
             DrawRailHints(c);
@@ -3971,9 +3975,11 @@ private:
             int hx = HintX();
             const int hy = g_screen_h - 44;
             hx += DrawHint(c, hx, hy, "A", "Games") + 22;
-            hx += DrawHint(c, hx, hy, "Y", "Picture") + 22;
-            if (custom) {
-                hx += DrawHint(c, hx, hy, "X", "Default") + 22;
+            if (IsPictureEditingEnabled()) {
+                hx += DrawHint(c, hx, hy, "Y", "Picture") + 22;
+                if (custom) {
+                    hx += DrawHint(c, hx, hy, "X", "Default") + 22;
+                }
             }
             DrawHint(c, hx, hy, "B", "Back");
         }

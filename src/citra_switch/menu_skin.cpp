@@ -1154,6 +1154,9 @@ void DrawSystemsCarousel(Canvas& c, const Fonts& f, const std::vector<SystemCard
     c.Disc(tx + 6.0f, mid_y + 47, 4.5f, text.status_ok ? MakeColor(0x6E, 0xE7, 0xB7) : MakeColor(0xFF, 0xCE, 0x78));
     f.regular->Draw(c, tx + 18, static_cast<int>(mid_y + 53), text.status, 16, kColTextDim);
 
+    if (!text.picture_button) {
+        return;
+    }
     const Rect b = PictureButton();
     Glass(c, b.x, b.y, b.w, b.h, b.h / 2, false, 0.7f);
     const int chip = 24;

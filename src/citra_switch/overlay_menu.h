@@ -28,6 +28,20 @@ struct QuickMenuNav {
     bool tab_next{};  // R
     bool page_prev{}; // ZL
     bool page_next{}; // ZR
+    // Held buttons and the sticks (-1..1, up positive), for the screen layout editor, which
+    // moves things for as long as they're held.
+    bool hold_up{};
+    bool hold_down{};
+    bool hold_left{};
+    bool hold_right{};
+    bool hold_l{};
+    bool hold_r{};
+    bool hold_zl{};
+    bool hold_zr{};
+    float stick_x{};
+    float stick_y{};
+    float rstick_x{};
+    float rstick_y{};
 };
 
 // True while the overlay is showing.
@@ -44,5 +58,8 @@ void ToggleQuickMenu();
 
 // Applies one navigation frame, updates the live settings, and repaints the overlay.
 QuickMenuAction UpdateQuickMenu(const QuickMenuNav& nav);
+
+// Opens the screen layout editor over the game (the Display page's "Custom Screen Layout").
+void BeginCustomLayoutEdit();
 
 } // namespace SwitchFrontend

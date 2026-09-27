@@ -728,6 +728,21 @@ SettingEntry SwapScreensEntry() {
     return entry;
 }
 
+// Opens the editor that moves and sizes each screen by hand.
+SettingEntry CustomLayoutEntry() {
+    SettingEntry entry =
+        Base({"Custom Screen Layout", "Move and resize each screen yourself.",
+              EntryFlag::QuickOnly, QuickSection::Display});
+    entry.id = "Custom Screen Layout";
+    entry.value = [] { return std::string{IsCustomScreenLayoutActive() ? "In use" : "Edit"}; };
+    entry.step = [](int dir) {
+        if (dir > 0) {
+            BeginCustomLayoutEdit();
+        }
+    };
+    return entry;
+}
+
 SettingEntry PointerModeEntry() {
     SettingEntry entry = Base({"Pointer Mode", "Drives the 3DS touch screen with a stick or gyro.",
                                EntryFlag::QuickOnly, QuickSection::Input});
@@ -979,6 +994,7 @@ void BuildLayout(std::vector<SettingEntry>& out) {
 
     t.Group("Screens");
     t << ScreenLayoutEntry();
+    t << CustomLayoutEntry();
     t << SwapScreensEntry();
     t.Ini("Layout");
     t << Relayout(Number({"Screen Gap", "Space left between the two screens.", EntryFlag::None,
@@ -991,6 +1007,17 @@ void BuildLayout(std::vector<SettingEntry>& out) {
                     "Fills the whole display in the single-screen layouts.", EntryFlag::None,
                     QuickSection::Display},
                    IsFullscreenStretchEnabled, SetFullscreenStretchEnabled, false);
+
+    t.Group("DS Games");
+    t << LocalEnum("ds_screen_layout",
+                   {"DS Screen Layout",
+                    "How DS games arrange their two screens. RetroArch's choice leaves it to "
+                    "RetroArch's own Core Options."},
+                   GetDsScreenLayout, SetDsScreenLayout, 0, DsScreenLayoutCount(),
+                   DsScreenLayoutName);
+    t << LocalEnum("ds_screen_gap",
+                   {"DS Screen Gap", "Space between a DS game's screens when they're stacked."},
+                   GetDsScreenGap, SetDsScreenGap, 0, DsScreenGapCount(), DsScreenGapName);
 
     t.Group("Screen Overlay");
     t.Ini("Layout");
@@ -1036,6 +1063,10 @@ void BuildLayout(std::vector<SettingEntry>& out) {
                     "Turns the d-pad with the menu, for holding the console sideways.",
                     EntryFlag::None, QuickSection::Display},
                    IsMenuInputRotated, SetMenuInputRotated, false);
+    t << LocalBool("picture_buttons",
+                   {"Picture Buttons",
+                    "Shows the buttons that change system and game pictures. Off hides them."},
+                   IsPictureEditingEnabled, SetPictureEditingEnabled, true);
     t << LayoutCycleEntry();
 }
 

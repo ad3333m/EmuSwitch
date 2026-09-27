@@ -27,6 +27,12 @@ struct OverlayMenuState {
     std::vector<OverlayMenuItem> items;
     int selected{};
     std::string hint; // Footer help text.
+    // A small panel at the bottom (or top) that leaves the game undimmed (the screen layout
+    // editor).
+    bool compact{};
+    bool compact_top{};
+    // Outlines both screens when >= 0, highlighting the top (0) or bottom (1) one.
+    int outline_screen = -1;
 };
 
 // Clockwise rotation the renderer applies to everything it draws over the game.
