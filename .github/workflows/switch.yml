@@ -9,6 +9,9 @@ on:
       libnx_ref:
         description: libnx branch/tag to build against
         default: master
+      release_tag:
+        description: Publish the build as a release with this tag (created at the built commit); empty skips it
+        default: ""
 
 permissions:
   contents: write
@@ -43,7 +46,8 @@ jobs:
           gh release view nightly --repo "${{ github.repository }}" >/dev/null 2>&1 ||             gh release create nightly --repo "${{ github.repository }}" --prerelease --title "Nightly"               --notes "Latest master build, rebuilt against libnx master for HOS 22.5.0."
           gh release upload nightly artifacts/EmuSwitch.nro --clobber --repo "${{ github.repository }}"
       - name: Publish release
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" artifacts/EmuSwitch.nro --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --notes "Rebuilt against libnx master and the latest devkitA64 for HOS 22.5.0 / Atmosphère 1.11.2."
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
+        run: gh release create "$TAG" artifacts/EmuSwitch.nro --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "$TAG" --notes "Rebuilt against libnx master and the latest devkitA64 for HOS 22.5.0 / Atmosphère 1.11.2."
