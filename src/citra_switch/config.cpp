@@ -340,6 +340,33 @@ void ApplyPreset(SwitchFrontend::SettingsPreset preset) {
     v.skip_cpu_write = true;
 }
 
+// Homebrew built on libctru's ndsp refuses to start without sdmc:/3ds/dspfirm.cdc, a file
+// dumped from a real console. The HLE DSP never runs it (DspHle::LoadComponent only logs a
+// hash), so a placeholder in the emulated SD card is enough. A folder of that name, which
+// people create by mistake, is replaced when it's empty.
+void EnsureDspFirmware() {
+    if (Settings::values.audio_emulation.GetValue() != Settings::AudioEmulation::HLE) {
+        return;
+    }
+    const std::string dir = FileUtil::GetUserPath(FileUtil::UserPath::SDMCDir) + "3ds/";
+    const std::string path = dir + "dspfirm.cdc";
+    if (FileUtil::IsDirectory(path) && !FileUtil::DeleteDir(path)) {
+        LOG_WARNING(Frontend, "{} is a folder with files in it; leaving it alone", path);
+        return;
+    }
+    if (FileUtil::Exists(path)) {
+        return;
+    }
+    FileUtil::CreateFullPath(dir);
+    std::string stub(0x400, '\0');
+    stub.replace(0x100, 4, "DSP1");
+    if (FileUtil::WriteStringToFile(false, path, stub) == stub.size()) {
+        LOG_INFO(Frontend, "Created placeholder DSP firmware at {}", path);
+    } else {
+        LOG_WARNING(Frontend, "Couldn't create placeholder DSP firmware at {}", path);
+    }
+}
+
 } // namespace
 
 namespace SwitchFrontend {
@@ -367,6 +394,8 @@ int Bootstrap() {
 
     // Persist the bumped launch count and any defaulted settings for next time.
     s_config->Save();
+
+    EnsureDspFirmware();
 
     LOG_INFO(Frontend, "Dekopon launch #{}", s_config->LaunchCount());
     LOG_INFO(Frontend, "User directory: {}", s_active_user_dir);
