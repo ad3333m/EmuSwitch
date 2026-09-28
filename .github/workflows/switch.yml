@@ -38,6 +38,12 @@ jobs:
         with:
           name: EmuSwitch
           path: artifacts/EmuSwitch.nro
+      - uses: actions/upload-artifact@v7
+        with:
+          name: EmuSwitch-elf
+          path: artifacts/EmuSwitch.elf
+          retention-days: 60
+          if-no-files-found: warn
       - name: Publish nightly
         if: github.ref == 'refs/heads/master'
         env:

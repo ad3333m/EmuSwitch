@@ -98,4 +98,8 @@ cmake --build build/switch --target citra_switch_nro -j"$JOBS"
 
 mkdir -p "$ROOT/artifacts"
 cp build/switch/src/citra_switch/dekopon.nro "$ROOT/artifacts/EmuSwitch.nro"
+# The unstripped ELF, kept as a workflow artifact (not in releases) so the offsets in a crash
+# report (sdmc:/switch/dekopon/log/crash.txt) can be matched to functions.
+cp build/switch/src/citra_switch/citra_switch.elf "$ROOT/artifacts/EmuSwitch.elf" ||
+    echo "::warning::citra_switch.elf not found, no symbols kept"
 ls -la "$ROOT/artifacts"
