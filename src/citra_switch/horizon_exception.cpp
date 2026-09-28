@@ -12,6 +12,10 @@
 
 #include "horizon_exception_entry.h"
 
+#ifndef DEKOPON_VERSION
+#define DEKOPON_VERSION "unknown"
+#endif
+
 // The stub in horizon_exception_entry.S builds a ThreadExceptionDump from fixed offsets. If libnx
 // ever moves a field, these catch it at compile time instead of leaving a dispatcher that silently
 // never recognises a fault.
@@ -28,6 +32,9 @@ static_assert(offsetof(ThreadExceptionDump, far) == DUMP_FAR);
 extern "C" bool DekoponFastmemArenaContains(std::uintptr_t addr);
 extern "C" bool DynarmicHorizonHandleFastmemFault(std::uint64_t host_pc, std::uint64_t* new_pc);
 extern "C" void _start();
+// The last log lines (common/logging/backend.cpp), oldest first.
+extern "C" std::size_t DekoponRecentLogLines(const char** lines, std::size_t max_lines,
+                                             std::size_t* width);
 
 namespace {
 // ESR exception classes for a data abort taken from a lower or the current exception level.
@@ -36,7 +43,7 @@ constexpr std::uint32_t ESR_EC_DATA_ABORT_SAME = 0x25;
 
 constexpr const char* CRASH_PATH = "/switch/dekopon/log/crash.txt";
 
-char s_report[8192];
+char s_report[16384];
 std::size_t s_report_len;
 
 void Put(char c) {
@@ -49,6 +56,13 @@ void Put(const char* text) {
     while (*text != '\0') {
         Put(*text++);
     }
+}
+
+void PutLine(const char* text, std::size_t max_chars) {
+    for (std::size_t i = 0; i < max_chars && text[i] != '\0'; ++i) {
+        Put(text[i]);
+    }
+    Put("\n");
 }
 
 void PutHex(std::uint64_t value, int digits) {
@@ -65,22 +79,80 @@ void PutField(const char* name, std::uint64_t value) {
     Put("\n");
 }
 
+void PutOffset(std::uint64_t value, std::uintptr_t base) {
+    if (value >= base) {
+        Put("  (+0x");
+        PutHex(value - base, 8);
+        Put(")");
+    }
+}
+
 void PutCodeField(const char* name, std::uint64_t value, std::uintptr_t base) {
     Put(name);
     Put(" = ");
     PutHex(value, 16);
-    if (value >= base) {
-        Put("  (+0x");
-        PutHex(value - base, 6);
-        Put(")");
-    }
+    PutOffset(value, base);
     Put("\n");
+}
+
+// True if [addr, addr + size) is mapped and readable, so the report can follow pointers taken
+// from a thread that may have crashed on a bad one.
+bool IsReadable(std::uint64_t addr, std::uint64_t size) {
+    MemoryInfo info{};
+    u32 page_info = 0;
+    if (R_FAILED(svcQueryMemory(&info, &page_info, addr))) {
+        return false;
+    }
+    return info.type != MemType_Unmapped && (info.perm & Perm_R) != 0 &&
+           addr + size <= info.addr + info.size;
+}
+
+// Follows the frame records (x29) up the crashing thread's stack: the return address into each
+// caller, innermost first. Leaf functions keep no record, so the crashing one may only be in pc.
+void PutBacktrace(const ThreadExceptionDump* ctx, std::uintptr_t base) {
+    Put("backtrace:\n");
+    std::uint64_t fp = ctx->fp.x;
+    for (int depth = 0; depth < 32; ++depth) {
+        if (fp == 0 || (fp & 7) != 0 || !IsReadable(fp, 16)) {
+            break;
+        }
+        const auto* record = reinterpret_cast<const std::uint64_t*>(fp);
+        const std::uint64_t caller_fp = record[0];
+        const std::uint64_t return_address = record[1];
+        if (return_address == 0) {
+            break;
+        }
+        Put("  #");
+        Put(static_cast<char>('0' + depth / 10));
+        Put(static_cast<char>('0' + depth % 10));
+        Put(" ");
+        PutHex(return_address, 16);
+        PutOffset(return_address, base);
+        Put("\n");
+        // Callers' records sit higher up the stack; anything else is a broken chain.
+        if (caller_fp <= fp) {
+            break;
+        }
+        fp = caller_fp;
+    }
+}
+
+// What was logged just before the crash, which the log file on the SD card usually misses.
+void PutRecentLog() {
+    const char* lines[64];
+    std::size_t width = 0;
+    const std::size_t count = DekoponRecentLogLines(lines, sizeof(lines) / sizeof(lines[0]), &width);
+    Put("recent log:\n");
+    for (std::size_t i = 0; i < count; ++i) {
+        Put("  ");
+        PutLine(lines[i], width);
+    }
 }
 
 void BuildReport(ThreadExceptionDump* ctx) {
     const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(&_start);
 
-    Put("EmuSwitch: unhandled CPU exception\n");
+    Put("EmuSwitch " DEKOPON_VERSION ": unhandled CPU exception\n");
     PutField("module base", base);
 
     if (!threadExceptionIsAArch64(ctx)) {
@@ -105,6 +177,9 @@ void BuildReport(ThreadExceptionDump* ctx) {
         PutHex(ctx->cpu_gprs[i].x, 16);
         Put("\n");
     }
+
+    PutBacktrace(ctx, base);
+    PutRecentLog();
 }
 
 void WriteReportToSd() {

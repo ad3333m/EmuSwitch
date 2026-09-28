@@ -120,6 +120,9 @@ private:
     void SwitchDiskCache(u64 title_id, const std::atomic_bool& stop_loading,
                          const VideoCore::DiskResourceLoadCallback& callback);
 
+    /// Returns the current title's disk cache, starting one if none was ever set up
+    ShaderDiskCache& CurrentDiskCache();
+
     /// Builds the rasterizer pipeline layout
     void BuildLayout();
 

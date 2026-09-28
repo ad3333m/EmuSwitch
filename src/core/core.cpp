@@ -1100,17 +1100,26 @@ void System::serialize(Archive& ar, const unsigned int file_version) {
         // Apply per program settings and switch the shader cache to the title running when the
         // savestate was created.
         // TODO(PabloMK7): Find better way to obtain the program ID.
+        u64 program_id = 0;
         const u32 thread_id = gsp->GetActiveClientThreadId();
         if (thread_id != std::numeric_limits<u32>::max()) {
             const auto thread = kernel->GetThreadByID(thread_id);
             if (thread) {
                 const std::shared_ptr<Kernel::Process> process = thread->owner_process.lock();
                 if (process) {
-                    gpu->ApplyPerProgramSettings(process->codeset->program_id);
-                    gpu->Renderer().Rasterizer()->SwitchDiskResources(process->codeset->program_id);
+                    program_id = process->codeset->program_id;
                 }
             }
         }
+        // With no GPU client to go by (the title had given the GPU up when it was saved), the
+        // loaded title's ID will do. Either way the new renderer gets its shader cache here,
+        // before anything is drawn with it.
+        if (program_id == 0 && app_loader) {
+            app_loader->ReadProgramId(program_id);
+        }
+        gpu->ApplyPerProgramSettings(program_id);
+        gpu->Renderer().Rasterizer()->SwitchDiskResources(program_id);
+        LOG_INFO(Core, "Load: shader cache set up for {:016X}", program_id);
     } else {
         u32 cheats_pid = cheat_engine.GetConnectedPID();
         ar & cheats_pid;

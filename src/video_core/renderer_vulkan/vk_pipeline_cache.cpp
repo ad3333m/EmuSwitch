@@ -196,7 +196,8 @@ void PipelineCache::LoadCache(const std::atomic_bool& stop_loading,
 
 void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loading,
                                 const VideoCore::DiskResourceLoadCallback& callback) {
-    if (GetProgramID() == title_id) {
+    // A renderer made while loading a save state has no disk cache yet, whatever its program ID.
+    if (GetProgramID() == title_id && curr_disk_cache) {
         LOG_DEBUG(Render_Vulkan,
                   "Skipping pipeline cache switch - already using cache for title_id={:016X}",
                   title_id);
@@ -221,8 +222,12 @@ void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loadi
 
     LOG_INFO(Render_Vulkan, "Switching pipeline cache to title_id={:016X}", title_id);
 
-    // Save current driver cache, update program ID and load the new driver cache
-    SaveDriverPipelineDiskCache();
+    // Save current driver cache, update program ID and load the new driver cache. A renderer
+    // that never had a title's cache has nothing worth saving, and writing its empty cache would
+    // replace the saved one of the title it carries the ID of.
+    if (curr_disk_cache) {
+        SaveDriverPipelineDiskCache();
+    }
     SetProgramID(title_id);
     LoadDriverPipelineDiskCache(stop_loading, nullptr);
 
@@ -409,6 +414,17 @@ void PipelineCache::SwitchDiskCache(u64 title_id, const std::atomic_bool& stop_l
     }
 }
 
+ShaderDiskCache& PipelineCache::CurrentDiskCache() {
+    if (!curr_disk_cache) [[unlikely]] {
+        // Only when no title's cache was ever set up for this renderer (one made while loading a
+        // save state, say). Drawing through a null cache would crash, so start one now.
+        LOG_WARNING(Render_Vulkan, "No shader cache set up for title {:016X}, starting one",
+                    GetProgramID());
+        SwitchDiskCache(GetProgramID(), std::atomic_bool{false}, {});
+    }
+    return *curr_disk_cache;
+}
+
 void PipelineCache::WaitPipelineBuilt(GraphicsPipeline& pipeline) {
     const auto start = std::chrono::steady_clock::now();
     pipeline.WaitDone();
@@ -437,7 +453,7 @@ bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
         info.state.shader_ids[i] = shader_hashes[i];
     }
 
-    GraphicsPipeline* const pipeline = curr_disk_cache->GetPipeline(info);
+    GraphicsPipeline* const pipeline = CurrentDiskCache().GetPipeline(info);
     if (!pipeline->IsDone()) {
         if (!pipeline->TryBuild(wait_built)) {
             return false;
@@ -627,7 +643,7 @@ bool PipelineCache::UseProgrammableVertexShader(const Pica::RegsInternal& regs,
                                                 Pica::ShaderSetup& setup,
                                                 const VertexLayout& layout) {
 
-    auto res = curr_disk_cache->UseProgrammableVertexShader(regs, setup, layout);
+    auto res = CurrentDiskCache().UseProgrammableVertexShader(regs, setup, layout);
 
     if (res.has_value()) {
         current_shaders[ProgramType::VS] = (*res).second;
@@ -645,7 +661,7 @@ void PipelineCache::UseTrivialVertexShader() {
 
 bool PipelineCache::UseFixedGeometryShader(const Pica::RegsInternal& regs) {
 
-    auto res = curr_disk_cache->UseFixedGeometryShader(regs);
+    auto res = CurrentDiskCache().UseFixedGeometryShader(regs);
 
     if (res.has_value()) {
         current_shaders[ProgramType::GS] = (*res).second;
@@ -664,7 +680,7 @@ void PipelineCache::UseTrivialGeometryShader() {
 void PipelineCache::UseFragmentShader(const Pica::RegsInternal& regs,
                                       const Pica::Shader::UserConfig& user) {
 
-    auto res = curr_disk_cache->UseFragmentShader(regs, user);
+    auto res = CurrentDiskCache().UseFragmentShader(regs, user);
 
     if (res.has_value()) {
         current_shaders[ProgramType::FS] = (*res).second;

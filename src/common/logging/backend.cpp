@@ -2,9 +2,11 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <mutex>
 #include <utility>
 #include <boost/algorithm/string/replace.hpp>
@@ -42,6 +44,27 @@
 namespace Common::Log {
 
 namespace {
+
+#ifdef __SWITCH__
+// The last log lines, kept in memory for the crash report. The log file is written by a
+// background thread and flushed now and then, so its tail is lost when the process dies.
+constexpr std::size_t CRASH_LOG_LINES = 40;
+constexpr std::size_t CRASH_LOG_WIDTH = 150;
+char crash_log[CRASH_LOG_LINES][CRASH_LOG_WIDTH];
+std::atomic<u64> crash_log_next{0};
+
+void RememberForCrashReport(const Entry& entry) {
+    const u64 index = crash_log_next.fetch_add(1, std::memory_order_relaxed);
+    char* const line = crash_log[index % CRASH_LOG_LINES];
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(entry.timestamp).count();
+    std::snprintf(line, CRASH_LOG_WIDTH, "[%5lld.%03lld] %s <%s> %s",
+                  static_cast<long long>(ms / 1000), static_cast<long long>(ms % 1000),
+                  GetLogClassName(entry.log_class), GetLevelName(entry.log_level),
+                  entry.message.c_str());
+}
+#else
+void RememberForCrashReport(const Entry&) {}
+#endif
 
 /**
  * Interface for logging backends.
@@ -419,6 +442,7 @@ public:
             return;
         }
         if (Settings::values.instant_debug_log.GetValue()) {
+            RememberForCrashReport(new_entry);
             ForEachBackend([&new_entry](Backend& backend) {
                 backend.Write(new_entry);
                 backend.Flush();
@@ -434,6 +458,7 @@ public:
                 new_entry.message += fmt::format(" (+{} suppressed)", repeat.suppressed);
             }
         }
+        RememberForCrashReport(new_entry);
         if (!message_queue.TryEmplace(std::move(new_entry))) {
             // Waiting for room makes the emulator wait constantly on logging.
             dropped_entries.fetch_add(1, std::memory_order_relaxed);
@@ -721,3 +746,21 @@ void FmtLogMessageImpl(Class log_class, Level log_level, const char* filename,
     }
 }
 } // namespace Common::Log
+
+#ifdef __SWITCH__
+// For the crash report (citra_switch/horizon_exception.cpp): points `lines` at the last log
+// lines, oldest first, and returns how many. A line may be cut short or half rewritten if a thread
+// was logging when the crash hit, so read at most `*width` characters of each.
+extern "C" std::size_t DekoponRecentLogLines(const char** lines, std::size_t max_lines,
+                                             std::size_t* width) {
+    using namespace Common::Log;
+    const u64 next = crash_log_next.load(std::memory_order_acquire);
+    const std::size_t count =
+        static_cast<std::size_t>(std::min<u64>({next, CRASH_LOG_LINES, max_lines}));
+    for (std::size_t i = 0; i < count; ++i) {
+        lines[i] = crash_log[(next - count + i) % CRASH_LOG_LINES];
+    }
+    *width = CRASH_LOG_WIDTH;
+    return count;
+}
+#endif
