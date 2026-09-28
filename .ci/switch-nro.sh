@@ -45,7 +45,9 @@ test -f externals/nxvk/switch/build/cross/src/nouveau/vulkan/libnvk.a
 EMUS="$ROOT/dist/emuswitch-romfs/emus"
 rm -rf "$ROOT/dist/emuswitch-romfs"
 mkdir -p "$EMUS"
-fetch() { curl -fL --retry 4 -o "$2" "$1"; }
+# --retry-all-errors: a dropped connection (curl exit 56) isn't retried by --retry alone, and the
+# libretro buildbot drops one now and then.
+fetch() { curl -fL --retry 5 --retry-all-errors --retry-delay 3 -o "$2" "$1"; }
 fetch https://github.com/PalindromicBreadLoaf/ARMSX2-NX/releases/download/v3.0.0/armsx2nx.nro "$EMUS/ps2.nro"
 fetch https://github.com/NaGaa95/Cemu-nx/releases/download/1.2.0/cemu.nro "$EMUS/wiiu.nro"
 core() {
