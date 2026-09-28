@@ -306,6 +306,10 @@ bool LoadFailed();
 // True if the most recent session failed because the Artic server disconnected or was unreachable.
 bool ArticDisconnected();
 
+// Why the last game was stopped, when that's worth telling (a save state that couldn't be
+// loaded), else empty. Cleared once read.
+std::string TakeHaltReason();
+
 // Signals the emulation thread to stop.
 void StopRom();
 

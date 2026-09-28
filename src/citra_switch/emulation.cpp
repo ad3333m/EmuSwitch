@@ -12,6 +12,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <fmt/format.h>
 
 #include "citra_switch/applets/swkbd.h"
@@ -45,6 +46,8 @@ std::atomic<bool> s_stop{true};
 // This lets the menu tell a crash/bad ROM apart from a clean exit.
 std::atomic<bool> s_load_ok{false};
 std::atomic<bool> s_artic_disconnected{false};
+// Why the emulation thread stopped the game, when that should be told; read after it's joined.
+std::string s_halt_reason;
 // Freezes the guest between run loop slices.
 std::atomic<bool> s_paused{false};
 // Layout requests originate on the frontend thread and are consumed by the sole GPU producer.
@@ -352,6 +355,9 @@ void EmuThread(std::string path) {
                 result == Core::System::ResultStatus::ErrorArticDisconnected;
             LOG_CRITICAL(Frontend, "Emulation halted: {} (error {})", system.GetStatusDetails(),
                          static_cast<int>(result));
+            if (result == Core::System::ResultStatus::ErrorUnknown) {
+                s_halt_reason = system.GetStatusDetails();
+            }
         }
         break;
     }
@@ -761,6 +767,10 @@ bool DeleteSaveState(unsigned int slot) {
 
 bool LoadFailed() {
     return !s_load_ok;
+}
+
+std::string TakeHaltReason() {
+    return std::exchange(s_halt_reason, std::string{});
 }
 
 bool ArticDisconnected() {

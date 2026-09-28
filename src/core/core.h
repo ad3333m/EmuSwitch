@@ -603,6 +603,9 @@ private:
     std::atomic_bool is_powered_on{};
 
     SaveStateStatus save_state_status = SaveStateStatus::NONE;
+    // Set while a state load has taken the running system down and not yet finished rebuilding
+    // it: a failure then leaves nothing that can keep running.
+    bool state_load_rebuilding = false;
     SaveStateStatus save_state_request_status = SaveStateStatus::NONE;
     u32 save_state_slot = 0;
     std::chrono::steady_clock::time_point save_state_request_time{};

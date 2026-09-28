@@ -319,7 +319,9 @@ void RunGame(PadState& pad, const std::string& rom) {
         }
         SwitchFrontend::EndRealAmiibo();
         SwitchFrontend::StopRom();
-        if (SwitchFrontend::ArticDisconnected()) {
+        if (std::string reason = SwitchFrontend::TakeHaltReason(); !reason.empty()) {
+            SwitchFrontend::SetMenuNotice(reason + ", so the game was closed");
+        } else if (SwitchFrontend::ArticDisconnected()) {
             SwitchFrontend::SetMenuNotice(
                 "Artic connection failed. Please check the address and tool/server version");
         } else if (SwitchFrontend::LoadFailed()) {

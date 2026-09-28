@@ -3,7 +3,9 @@
 // Refer to the license.txt file included.
 
 #include <chrono>
+#include <istream>
 #include <sstream>
+#include <streambuf>
 #include <cryptopp/hex.h>
 #include <fmt/ranges.h>
 #include "common/archives.h"
@@ -48,6 +50,17 @@ std::string GetSaveStatePath(u64 program_id, u64 movie_id, u32 slot) {
                            FileUtil::GetUserPath(FileUtil::UserPath::StatesDir), program_id, slot);
     }
 }
+
+namespace {
+// Lets an archive read a buffer where it is, without a stream making its own copy.
+class InPlaceReader : public std::streambuf {
+public:
+    explicit InPlaceReader(std::vector<u8>& data) {
+        char* const begin = reinterpret_cast<char*>(data.data());
+        setg(begin, begin, begin + data.size());
+    }
+};
+} // namespace
 
 static bool ValidateSaveState(const CSTHeader& header, SaveStateInfo& info, u64 program_id,
                               u64 movie_id) {
@@ -157,7 +170,8 @@ void System::SaveState(u32 slot) const {
     oarchive oa{sstream};
     oa&* this;
 
-    const std::string& str{sstream.str()};
+    // A view rather than str(): a copy would double the few hundred MB a state takes.
+    const std::string_view str = sstream.view();
     const auto data = std::span<const u8>{reinterpret_cast<const u8*>(str.data()), str.size()};
     auto buffer = Common::Compression::CompressDataZSTDDefault(data);
 
@@ -233,13 +247,17 @@ void System::LoadState(u32 slot) {
         }
         decompressed = Common::Compression::DecompressDataZSTD(buffer);
     }
-    std::istringstream sstream{
-        std::string{reinterpret_cast<char*>(decompressed.data()), decompressed.size()},
-        std::ios_base::binary};
-    decompressed.clear();
+    if (decompressed.empty()) {
+        throw std::runtime_error("The save state couldn't be decompressed");
+    }
+    LOG_INFO(Core, "Save state read: {} MB", decompressed.size() >> 20);
 
-    // Deserialize
-    iarchive ia{sstream};
+    // Deserialize straight out of the decompressed data. Copying it into a string stream held
+    // two or three copies of the whole state (hundreds of MB for a New 3DS game) while the
+    // system was being rebuilt, which could leave too little memory to rebuild it.
+    InPlaceReader reader{decompressed};
+    std::istream stream{&reader};
+    iarchive ia{stream};
     ia&* this;
 }
 
@@ -249,7 +267,7 @@ std::vector<u8> System::SaveStateBuffer() const {
     oarchive oa{sstream};
     oa&* this;
 
-    const std::string& str{sstream.str()};
+    const std::string_view str = sstream.view();
     const auto data = std::span<const u8>{reinterpret_cast<const u8*>(str.data()), str.size()};
     auto buffer = Common::Compression::CompressDataZSTDDefault(data);
 

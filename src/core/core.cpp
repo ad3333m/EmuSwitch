@@ -177,6 +177,7 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
         save_state_request_status = SaveStateStatus::NONE;
         LOG_INFO(Core, "Begin load of slot {}", slot);
         try {
+            state_load_rebuilding = false;
             gpu->WaitIdle();
             System::LoadState(slot);
             LOG_INFO(Core, "Load completed");
@@ -184,6 +185,14 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
             LOG_ERROR(Core, "Error loading: {}", e.what());
             status_details = e.what();
             PostSaveStateEvent(true, slot, false, e.what());
+            if (state_load_rebuilding) {
+                // The game was already taken down and what got restored is incomplete, so there
+                // is nothing that can keep running: stop instead of crashing on the remains.
+                state_load_rebuilding = false;
+                save_state_status = SaveStateStatus::NONE;
+                status_details = std::string{"Couldn't load the save state ("} + e.what() + ")";
+                return ResultStatus::ErrorUnknown;
+            }
             return ResultStatus::ErrorSavestate;
         }
         PostSaveStateEvent(true, slot, true, {});
@@ -1030,10 +1039,16 @@ void System::serialize(Archive& ar, const unsigned int file_version) {
     if (Archive::is_loading::value) {
         // When loading, we want to make sure any lingering state gets cleared out before we begin.
         // Shutdown, but persist a few things between loads...
+        state_load_rebuilding = true;
+        LOG_INFO(Core, "Load: rebuilding the system");
         Shutdown(true);
 
-        [[maybe_unused]] const System::ResultStatus result =
+        const System::ResultStatus result =
             Init(*m_emu_window, m_secondary_window, mem_mode, num_cores);
+        if (result != ResultStatus::Success) {
+            throw std::runtime_error("the system couldn't be set up again");
+        }
+        LOG_INFO(Core, "Load: system rebuilt, restoring its state");
     }
 
     // Flush on save, don't flush on load
@@ -1059,6 +1074,9 @@ void System::serialize(Archive& ar, const unsigned int file_version) {
     ar&* kernel.get();
     ar&* gpu.get();
     ar & movie;
+    if (Archive::is_loading::value) {
+        LOG_INFO(Core, "Load: memory, kernel and GPU restored");
+    }
 
     // This needs to be set from somewhere - might as well be here!
     if (Archive::is_loading::value) {
@@ -1099,6 +1117,7 @@ void System::serialize(Archive& ar, const unsigned int file_version) {
     }
 
     save_state_status = SaveStateStatus::NONE;
+    state_load_rebuilding = false;
 }
 
 SERIALIZE_IMPL(System)
