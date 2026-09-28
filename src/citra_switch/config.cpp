@@ -25,6 +25,7 @@
 #include "citra_switch/settings_registry.h"
 #include "citra_switch/input.h"
 #include "citra_switch/overlay_menu.h"
+#include "citra_switch/themes.h"
 #include "core/frontend/camera/factory.h"
 #include "core/hle/service/cam/cam_params.h"
 #include "core/hle/service/service.h"
@@ -75,6 +76,7 @@ int s_menu_rotation = 0;
 bool s_menu_input_rotated = false;
 bool s_picture_editing = true;
 bool s_cover_download = true;
+int s_menu_theme = 0;
 std::string s_systems_order;
 std::string s_steamgriddb_key;
 int s_ds_screen_layout = 0;
@@ -589,6 +591,22 @@ std::string GetSystemsOrder() {
 
 void SetSystemsOrder(const std::string& order) {
     s_systems_order = order;
+}
+
+int GetMenuTheme() {
+    return s_menu_theme;
+}
+
+void SetMenuTheme(int theme) {
+    s_menu_theme = std::clamp(theme, 0, MenuThemeCount() - 1);
+}
+
+int MenuThemeCount() {
+    return static_cast<int>(kThemes.size());
+}
+
+const char* MenuThemeName(int theme) {
+    return ThemeAt(theme).name;
 }
 
 std::string GetSteamGridDbKey() {

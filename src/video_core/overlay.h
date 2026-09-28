@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,21 @@ struct OverlayMenuState {
     // Outlines both screens when >= 0, highlighting the top (0) or bottom (1) one.
     int outline_screen = -1;
 };
+
+// The launcher theme's colours for everything drawn over the game (RGB, 0..1): the accent, the
+// glass panels and the dimming behind the quick menu.
+struct OverlayTheme {
+    std::array<float, 3> accent{0.37f, 0.91f, 0.87f};
+    std::array<float, 3> panel{0.066f, 0.07f, 0.1f};
+    std::array<float, 3> scrim{0.012f, 0.012f, 0.03f};
+};
+void SetOverlayTheme(const OverlayTheme& theme);
+OverlayTheme GetOverlayTheme();
+
+// Covers the whole picture in black while set, so the last frames before the game closes are
+// black rather than a frozen picture.
+void SetOverlayBlackout(bool enabled);
+bool IsOverlayBlackout();
 
 // Clockwise rotation the renderer applies to everything it draws over the game.
 void SetOverlayRotation(u32 degrees);

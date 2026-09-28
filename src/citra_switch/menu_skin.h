@@ -27,21 +27,22 @@ using Gfx::MakeColor;
 using Gfx::u32;
 using Gfx::u8;
 
+// The menu's colours. ApplyTheme() sets them (between frames); these are Midnight's.
 namespace Palette {
-constexpr u32 kColBg = MakeColor(0x06, 0x07, 0x0B);
-constexpr u32 kColRail = MakeColor(0x2A, 0x2A, 0x36);
-constexpr u32 kColSurface = MakeColor(0x1C, 0x1C, 0x26);
-constexpr u32 kColSurfaceHi = MakeColor(0x2A, 0x2A, 0x38);
-constexpr u32 kColBadge = MakeColor(0x34, 0x33, 0x42);
-constexpr u32 kColAccent = MakeColor(0x5E, 0xE7, 0xDF);
-constexpr u32 kColAccent2 = MakeColor(0x8B, 0x7C, 0xFF);
-constexpr u32 kColAccentDim = MakeColor(0x1E, 0x4E, 0x52);
-constexpr u32 kColText = MakeColor(0xF5, 0xF5, 0xFB);
-constexpr u32 kColTextDim = MakeColor(0xA4, 0xA3, 0xBA);
-constexpr u32 kColOnAccent = MakeColor(0x04, 0x1A, 0x19);
-constexpr u32 kColError = MakeColor(0xFF, 0x5A, 0x6A);
-constexpr u32 kColHintBar = MakeColor(0x06, 0x07, 0x0B);
-constexpr u32 kColLine = MakeColor(0xFF, 0xFF, 0xFF, 0x14);
+inline u32 kColBg = MakeColor(0x06, 0x07, 0x0B);
+inline u32 kColRail = MakeColor(0x2A, 0x2A, 0x36);
+inline u32 kColSurface = MakeColor(0x1C, 0x1C, 0x26);
+inline u32 kColSurfaceHi = MakeColor(0x2A, 0x2A, 0x38);
+inline u32 kColBadge = MakeColor(0x34, 0x33, 0x42);
+inline u32 kColAccent = MakeColor(0x5E, 0xE7, 0xDF);
+inline u32 kColAccent2 = MakeColor(0x8B, 0x7C, 0xFF);
+inline u32 kColAccentDim = MakeColor(0x1E, 0x4E, 0x52);
+inline u32 kColText = MakeColor(0xF5, 0xF5, 0xFB);
+inline u32 kColTextDim = MakeColor(0xA4, 0xA3, 0xBA);
+inline u32 kColOnAccent = MakeColor(0x04, 0x1A, 0x19);
+inline u32 kColError = MakeColor(0xFF, 0x5A, 0x6A);
+inline u32 kColHintBar = MakeColor(0x06, 0x07, 0x0B);
+inline u32 kColLine = MakeColor(0xFF, 0xFF, 0xFF, 0x14);
 } // namespace Palette
 
 namespace Layout {
@@ -80,6 +81,9 @@ Grid ComputeGrid(int screen_w, int screen_h);
 
 // Starts a frame at `now` seconds: moves the backdrop along and lets the caches fill again.
 void BeginFrame(double now, int screen_w, int screen_h);
+// Switches the menu to theme `index` (themes.h): the palette, backdrop, glass and focus ring.
+// Call between frames; the cached pictures of the old colours are dropped.
+void ApplyTheme(int index);
 // After the warm-up pass: nothing new is built until the next BeginFrame, so every band of the
 // frame sees the same pictures.
 void EndWarmup();
@@ -92,6 +96,8 @@ void DrawBackdrop(Canvas& c);
 
 // ---- profile bar ---------------------------------------------------------------------------------
 void SetAvatar(std::vector<u32> rgba, int w, int h);
+// The profile's nickname: its first letter stands in while there's no avatar picture.
+void SetProfileName(std::string_view name);
 struct TopBar {
     std::string_view title;     // the nickname on Home, a page or system name elsewhere
     std::string_view subtitle;  // small line under it

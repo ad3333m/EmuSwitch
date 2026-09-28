@@ -1289,6 +1289,12 @@ void BuildAdvanced(std::vector<SettingEntry>& out) {
                 "Preferences > API."},
                SettingsModal::SteamGridDbKey,
                [] { return std::string{GetSteamGridDbKey().empty() ? "Not set" : "Set"}; });
+
+    // The very last entry.
+    t.Group("Theme");
+    t << LocalEnum("menu_theme",
+                   {"Theme", "The colours of the menus and of the in-game quick menu."},
+                   GetMenuTheme, SetMenuTheme, 0, MenuThemeCount(), MenuThemeName);
 }
 
 std::vector<SettingEntry> BuildRegistry() {

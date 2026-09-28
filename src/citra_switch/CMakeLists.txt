@@ -59,6 +59,7 @@ add_executable(citra_switch
     rail_icons.h
     steamgriddb.cpp
     steamgriddb.h
+    themes.h
     save_manager.cpp
     save_manager.h
     settings_menu.cpp

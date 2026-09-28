@@ -21,7 +21,29 @@ std::atomic<u32> s_rotation{0};
 std::mutex s_toast_mutex;
 std::string s_toast;
 std::chrono::steady_clock::time_point s_toast_until;
+
+std::mutex s_theme_mutex;
+OverlayTheme s_theme;
+std::atomic<bool> s_blackout{false};
 } // namespace
+
+void SetOverlayTheme(const OverlayTheme& theme) {
+    std::scoped_lock lock{s_theme_mutex};
+    s_theme = theme;
+}
+
+OverlayTheme GetOverlayTheme() {
+    std::scoped_lock lock{s_theme_mutex};
+    return s_theme;
+}
+
+void SetOverlayBlackout(bool enabled) {
+    s_blackout.store(enabled, std::memory_order_release);
+}
+
+bool IsOverlayBlackout() {
+    return s_blackout.load(std::memory_order_acquire);
+}
 
 void SetOverlayRotation(u32 degrees) {
     s_rotation.store(degrees % 360 / 90 * 90, std::memory_order_release);

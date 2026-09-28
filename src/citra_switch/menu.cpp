@@ -89,6 +89,29 @@ double NowSeconds() {
     return static_cast<double>(armTicksToNs(armGetSystemTick() - start)) / 1e9;
 }
 
+// Puts the chosen theme into the skin whenever it changes (it can, on the Settings page).
+// Between frames only.
+void ApplyMenuTheme() {
+    static int applied = -1;
+    const int theme = GetMenuTheme();
+    if (theme != applied) {
+        applied = theme;
+        Skin::ApplyTheme(theme);
+    }
+}
+
+// Shows opaque black in `fb`, so it's black rather than the last menu picture that stays up
+// while the display changes hands.
+void PresentBlack(Framebuffer& fb) {
+    u32 stride = 0;
+    auto* px = static_cast<u32*>(framebufferBegin(&fb, &stride));
+    if (!px) {
+        return;
+    }
+    std::fill(px, px + fb.fb_size / sizeof(u32), 0xFF000000u);
+    framebufferEnd(&fb);
+}
+
 // Fonts and drawing threads, set up once for the loading screen and the menu.
 bool EnsureMenuGraphics() {
     static bool tried = false, ok = false;
@@ -1042,6 +1065,7 @@ public:
             updater_thread.join();
         }
         if (fb_ready) {
+            PresentBlack(fb);
             framebufferClose(&fb);
         }
     }
@@ -3273,6 +3297,7 @@ private:
     }
 
     void PrepareFrame() {
+        ApplyMenuTheme();
         // Pictures finished loading in the background join between frames.
         Art::Pump();
         const double now = NowSeconds();
@@ -5182,6 +5207,7 @@ void ShowStartupScreen(std::string_view status) {
     if (!EnsureMenuGraphics()) {
         return;
     }
+    ApplyMenuTheme();
     if (!g_splash_fb_ready) {
         framebufferCreate(&g_splash_fb, nwindowGetDefault(), kPanelW, kPanelH, PIXEL_FORMAT_RGBA_8888, 3);
         g_splash_fb_ready = true;

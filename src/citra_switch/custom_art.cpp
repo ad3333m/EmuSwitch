@@ -488,13 +488,20 @@ bool HasPickedArt(const GameEntry& game) {
 std::string LoadProfile() {
     std::string name = "Player";
 #ifdef __SWITCH__
-    if (R_FAILED(accountInitialize(AccountServiceType_Application))) {
+    // Started without a user picked (from the album, or a game launched without one), the
+    // application service can refuse; the system one still lists the console's users.
+    if (R_FAILED(accountInitialize(AccountServiceType_Application)) &&
+        R_FAILED(accountInitialize(AccountServiceType_System))) {
         return name;
     }
+    // The user the game was started with, else whoever played last, else the console's first.
     AccountUid uid{};
     if (R_FAILED(accountGetPreselectedUser(&uid)) || !accountUidIsValid(&uid)) {
-        if (R_FAILED(accountGetLastOpenedUser(&uid))) {
-            uid = AccountUid{};
+        if (R_FAILED(accountGetLastOpenedUser(&uid)) || !accountUidIsValid(&uid)) {
+            AccountUid users[ACC_USER_LIST_SIZE]{};
+            s32 count = 0;
+            uid = R_SUCCEEDED(accountListAllUsers(users, ACC_USER_LIST_SIZE, &count)) && count > 0 ? users[0]
+                                                                                                : AccountUid{};
         }
     }
     AccountProfile profile;
@@ -503,6 +510,7 @@ std::string LoadProfile() {
         AccountProfileBase base{};
         if (R_SUCCEEDED(accountProfileGet(&profile, &user, &base)) && base.nickname[0] != 0) {
             name = base.nickname;
+            Skin::SetProfileName(name);
         }
         u32 size = 0;
         if (R_SUCCEEDED(accountProfileGetImageSize(&profile, &size)) && size > 0 && size < (1u << 20)) {

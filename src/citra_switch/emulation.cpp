@@ -18,6 +18,7 @@
 #include "citra_switch/applets/swkbd.h"
 #include "citra_switch/config.h"
 #include "citra_switch/emu_window.h"
+#include "citra_switch/themes.h"
 #include "common/file_util.h"
 #include "common/horizon_boost.h"
 #include "common/horizon_thread.h"
@@ -399,6 +400,12 @@ bool BootRom(const std::string& rom_arg) {
     system.ApplySettings();
     Settings::LogSettings();
 
+    // The quick menu and the messages over the game take the menus' theme.
+    VideoCore::OverlayTheme overlay_theme;
+    ThemeOverlayColors(GetMenuTheme(), overlay_theme.accent, overlay_theme.panel, overlay_theme.scrim);
+    VideoCore::SetOverlayTheme(overlay_theme);
+    VideoCore::SetOverlayBlackout(false);
+
     // Hand text input to Horizon's swkbd.
     Frontend::RegisterDefaultApplets(system);
     RegisterKeyboard(system);
@@ -778,6 +785,13 @@ bool ArticDisconnected() {
 }
 
 void StopRom() {
+    if (!s_stop && s_emu_thread.joinable()) {
+        // A few black frames first, so the game's last picture doesn't sit frozen on screen
+        // while it closes.
+        s_paused = false;
+        VideoCore::SetOverlayBlackout(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(70));
+    }
     s_stop = true;
     s_paused = false;
     CancelKeyboard();
@@ -796,6 +810,7 @@ void StopRom() {
     }
     system.EjectCartridge();
     ClearPerGameConfig();
+    VideoCore::SetOverlayBlackout(false);
 }
 
 } // namespace SwitchFrontend

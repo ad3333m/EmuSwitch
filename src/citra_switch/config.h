@@ -92,6 +92,12 @@ void SetCoverDownloadEnabled(bool enabled);
 std::string GetSystemsOrder();
 void SetSystemsOrder(const std::string& order);
 
+// The menus' colour theme: an index into themes.h.
+int GetMenuTheme();
+void SetMenuTheme(int theme);
+int MenuThemeCount();
+const char* MenuThemeName(int theme);
+
 // The player's SteamGridDB API key (steamgriddb.com > Preferences > API), or empty.
 std::string GetSteamGridDbKey();
 void SetSteamGridDbKey(const std::string& key);

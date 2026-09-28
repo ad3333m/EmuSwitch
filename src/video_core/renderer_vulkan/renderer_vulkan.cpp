@@ -2009,8 +2009,9 @@ OverlayDraw RendererVulkan::PrepareToast(const Layout::FramebufferLayout& layout
     builder.AddText(ox, oy, text, scale);
     const u32 glyph_vertices = builder.VertexCount() - ring_end;
 
+    const VideoCore::OverlayTheme theme = VideoCore::GetOverlayTheme();
     constexpr std::array<float, 4> shadow_color = {0.0f, 0.0f, 0.0f, 0.45f};
-    constexpr std::array<float, 4> box_color = {0.066f, 0.07f, 0.1f, 0.94f};
+    const std::array<float, 4> box_color = {theme.panel[0], theme.panel[1], theme.panel[2], 0.94f};
     constexpr std::array<float, 4> ring_color = {1.0f, 1.0f, 1.0f, 0.12f};
     constexpr std::array<float, 4> text_color = {0.96f, 0.96f, 0.98f, 1.0f};
 
@@ -2029,10 +2030,10 @@ OverlayDraw RendererVulkan::PrepareToast(const Layout::FramebufferLayout& layout
 
 namespace {
 
-// The in-game menu shares the launcher's look: a dark glass panel, teal accents and button chips.
+// The in-game menu shares the launcher's look: a dark glass panel, the theme's accent and button
+// chips.
 constexpr std::array<float, 4> kQmText = {0.96f, 0.96f, 0.98f, 1.0f};
 constexpr std::array<float, 4> kQmTextDim = {0.64f, 0.64f, 0.73f, 1.0f};
-constexpr std::array<float, 4> kQmAccent = {0.37f, 0.91f, 0.87f, 1.0f};
 
 // A footer hint such as "A Select": a button chip and its label, or just text ("1-10 of 23").
 struct HintPart {
@@ -2080,6 +2081,22 @@ std::vector<HintPart> SplitHints(const std::string& hint) {
 
 OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& layout,
                                              Frame* frame) {
+    if (VideoCore::IsOverlayBlackout()) {
+        // The game is closing: black over everything, drawn last.
+        const OverlayCanvas canvas = MakeOverlayCanvas(layout);
+        if (canvas.width <= 0.0f || canvas.height <= 0.0f) {
+            return {};
+        }
+        std::vector<float> verts;
+        OverlayBuilder builder{verts, canvas};
+        builder.AddRect(0.0f, 0.0f, canvas.width, canvas.height);
+        OverlayDraw overlay;
+        if (!UploadOverlayVertices(frame, verts, overlay)) {
+            return {};
+        }
+        overlay.batches.push_back({{0.0f, 0.0f, 0.0f, 1.0f}, 0, builder.VertexCount()});
+        return overlay;
+    }
     if (!VideoCore::IsOverlayMenuVisible()) {
         quick_menu_open = 0.0f;
         return {};
@@ -2096,6 +2113,8 @@ OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& la
     if (w <= 0.0f || h <= 0.0f) {
         return {};
     }
+    const VideoCore::OverlayTheme theme = VideoCore::GetOverlayTheme();
+    const std::array<float, 4> accent = {theme.accent[0], theme.accent[1], theme.accent[2], 1.0f};
 
     // The menu fades and rises in as it opens; the highlight glides between rows.
     const auto now = std::chrono::steady_clock::now();
@@ -2203,7 +2222,7 @@ OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& la
     if (!state.compact) {
         const u32 s = builder.VertexCount();
         builder.AddRect(0.0f, 0.0f, w, h);
-        emit({0.012f, 0.012f, 0.03f, 0.62f}, s);
+        emit({theme.scrim[0], theme.scrim[1], theme.scrim[2], 0.62f}, s);
     }
     // Outlines around the two screens, the one being edited in the accent colour. Canvas pixels
     // are framebuffer pixels unless the overlay is rotated, so only then.
@@ -2226,7 +2245,7 @@ OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& la
         {
             const u32 s = builder.VertexCount();
             outline(top_first ? layout.bottom_screen : layout.top_screen);
-            emit(kQmAccent, s);
+            emit(accent, s);
         }
     }
 
@@ -2240,7 +2259,7 @@ OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& la
     {
         const u32 s = builder.VertexCount();
         builder.AddRoundRect(panel_x0, panel_y0, panel_x1, panel_y1, radius);
-        emit({0.066f, 0.07f, 0.1f, 0.94f}, s);
+        emit({theme.panel[0], theme.panel[1], theme.panel[2], 0.94f}, s);
     }
     {
         // Stacked faint bands make a smooth-looking sheen that fades down the panel.
@@ -2292,7 +2311,7 @@ OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& la
         {
             const u32 s = builder.VertexCount();
             builder.AddShadow(hx0, top, hx1, bottom, hr, em * 0.6f);
-            emit({kQmAccent[0], kQmAccent[1], kQmAccent[2], 0.10f}, s);
+            emit({accent[0], accent[1], accent[2], 0.10f}, s);
         }
         {
             const u32 s = builder.VertexCount();
@@ -2311,7 +2330,7 @@ OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& la
             const float bar_h = (bottom - top) * 0.5f;
             const float bar_y = top + (bottom - top - bar_h) / 2.0f;
             builder.AddRoundRect(bar_x, bar_y, bar_x + bar_w, bar_y + bar_h, bar_w / 2.0f);
-            emit(kQmAccent, s);
+            emit(accent, s);
         }
     }
 
@@ -2385,7 +2404,7 @@ OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& la
             const u32 s = builder.VertexCount();
             builder.AddText(panel_x1 - pad - OverlayBuilder::Measure(item.value, scale), row_text_y(state.selected),
                             item.value, scale);
-            emit(kQmAccent, s);
+            emit(accent, s);
         }
     }
 

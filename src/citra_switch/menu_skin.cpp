@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "citra_switch/menu_skin_art.h"
+#include "citra_switch/themes.h"
 
 namespace SwitchFrontend::Skin {
 namespace {
@@ -38,11 +39,37 @@ u8 A(float a) {
     return static_cast<u8>(std::clamp(a, 0.0f, 1.0f) * 255.0f + 0.5f);
 }
 
-// Teal -> violet -> pink, the focus ring's colours; `phase` slowly turns it.
+// ---- theme ------------------------------------------------------------------------------------
+
+// What the theme puts in the backdrop, the glass and the focus ring (the Palette has the rest).
+// These are Midnight's.
+struct ThemeLook {
+    std::array<u32, 3> ring{MakeColor(0x5E, 0xE7, 0xDF), MakeColor(0x8B, 0x7C, 0xFF), MakeColor(0xF0, 0x7C, 0xD8)};
+    std::array<float, 3> bg_top{9, 10, 16};
+    std::array<float, 3> bg_bottom{4, 5, 8};
+    std::array<float, 3> glow{118, 64, 214};
+    float glow_k = 0.22f;
+    std::array<float, 3> glow2{24, 120, 150};
+    float ambient_k = 0.34f;
+    u32 glass_top = MakeColor(0x2C, 0x2C, 0x3A);
+    u32 glass_bottom = MakeColor(0x18, 0x18, 0x22);
+    u32 progress_end = MakeColor(0xA8, 0x9E, 0xFF);
+};
+ThemeLook g_look;
+
+u32 HexColor(std::uint32_t rgb) {
+    return MakeColor(u8(rgb >> 16), u8(rgb >> 8), u8(rgb));
+}
+
+std::array<float, 3> HexFloats(std::uint32_t rgb) {
+    return {float((rgb >> 16) & 0xFF), float((rgb >> 8) & 0xFF), float(rgb & 0xFF)};
+}
+
+// The theme's three accents around the focus ring; `phase` slowly turns it.
 u32 RingAt(float t, float phase = 0.0f) {
     t = t + phase;
     t -= std::floor(t);
-    const u32 a = MakeColor(0x5E, 0xE7, 0xDF), b = MakeColor(0x8B, 0x7C, 0xFF), c = MakeColor(0xF0, 0x7C, 0xD8);
+    const u32 a = g_look.ring[0], b = g_look.ring[1], c = g_look.ring[2];
     if (t < 0.4f) return Canvas::Mix(a, b, t / 0.4f);
     if (t < 0.8f) return Canvas::Mix(b, c, (t - 0.4f) / 0.4f);
     return Canvas::Mix(c, a, (t - 0.8f) / 0.2f);
@@ -114,11 +141,14 @@ void BuildField(double t) {
     struct Blob {
         float cx, cy, rx, ry, r, g, b, k;
     };
+    const ThemeLook& look = g_look;
     const Blob blobs[] = {
         {0.16f + 0.05f * std::sin(ft * 0.23f), 0.06f + 0.06f * std::cos(ft * 0.19f), 0.78f, 0.95f, g_amb[0], g_amb[1],
-         g_amb[2], 0.34f},
-        {0.88f + 0.04f * std::cos(ft * 0.17f), 0.95f + 0.05f * std::sin(ft * 0.21f), 0.72f, 0.85f, 118, 64, 214, 0.22f},
-        {0.56f + 0.12f * std::sin(ft * 0.11f), 0.52f + 0.08f * std::cos(ft * 0.13f), 0.5f, 0.6f, 24, 120, 150, 0.07f},
+         g_amb[2], look.ambient_k},
+        {0.88f + 0.04f * std::cos(ft * 0.17f), 0.95f + 0.05f * std::sin(ft * 0.21f), 0.72f, 0.85f, look.glow[0],
+         look.glow[1], look.glow[2], look.glow_k},
+        {0.56f + 0.12f * std::sin(ft * 0.11f), 0.52f + 0.08f * std::cos(ft * 0.13f), 0.5f, 0.6f, look.glow2[0],
+         look.glow2[1], look.glow2[2], 0.07f},
     };
     const Spot& sp = g_spot;
     const float spot_k = sp.strength * 0.55f;
@@ -127,7 +157,10 @@ void BuildField(double t) {
         const float fy = std::min(1.0f, (j * 8.0f) / F.h);
         for (int i = 0; i < F.lw; ++i) {
             const float fx = std::min(1.0f, (i * 8.0f) / F.w);
-            float r = 9 - 5 * fy, g = 10 - 5 * fy, b = 16 - 8 * fy;
+            const auto& top = g_look.bg_top;
+            const auto& bottom = g_look.bg_bottom;
+            float r = top[0] + (bottom[0] - top[0]) * fy, g = top[1] + (bottom[1] - top[1]) * fy,
+                  b = top[2] + (bottom[2] - top[2]) * fy;
             for (const Blob& bl : blobs) {
                 const float dx = (fx - bl.cx) / bl.rx, dy = (fy - bl.cy) / bl.ry;
                 float f = std::max(0.0f, 1.0f - (dx * dx + dy * dy));
@@ -175,6 +208,8 @@ std::unordered_map<std::string, std::shared_ptr<const Picture>> g_card_pics;
 std::unordered_map<std::string, std::shared_ptr<const Picture>> g_logo_pics;
 Image g_avatar;
 std::uint64_t g_avatar_id = 0;
+// The profile nickname's first letter, drawn while there's no avatar picture ("" for a silhouette).
+std::string g_profile_initial;
 
 std::shared_ptr<const Picture> MakePicture(Image img, u32 accent = 0) {
     auto p = std::make_shared<Picture>();
@@ -406,7 +441,7 @@ void GlassDirect(Canvas& c, int x, int y, int w, int h, int r, bool raised, floa
     // One pass: the body's gradient, a sheen over its upper half and a bright hairline along
     // the top edge, all following the rounded outline.
     c.FillRoundAAWith(x, y, w, h, r, [top, bot, rows](float t) {
-        const u32 base = Canvas::Mix(MakeColor(0x2C, 0x2C, 0x3A, top), MakeColor(0x18, 0x18, 0x22, bot), t);
+        const u32 base = Canvas::Mix(WithAlpha(g_look.glass_top, top), WithAlpha(g_look.glass_bottom, bot), t);
         const float row = t * rows;
         float lift = t < 0.5f ? 0.08f * (1 - 2 * t) * (1 - 2 * t) : 0.0f;
         lift += row < 1.0f ? 0.30f : row < 2.0f ? 0.10f : 0.0f;
@@ -540,6 +575,50 @@ void BeginFrame(double now, int screen_w, int screen_h) {
     g_may_build.store(true);
 }
 
+void ApplyTheme(int index) {
+    const SwitchFrontend::Theme& t = SwitchFrontend::ThemeAt(index);
+    const u32 accent = HexColor(t.accent), accent2 = HexColor(t.accent2), surface = HexColor(t.surface);
+    const u32 bg = Canvas::Mix(HexColor(t.bg_top), HexColor(t.bg_bottom), 0.6f);
+    ThemeLook look;
+    look.ring = {accent, accent2, HexColor(t.accent3)};
+    look.bg_top = HexFloats(t.bg_top);
+    look.bg_bottom = HexFloats(t.bg_bottom);
+    look.glow = HexFloats(t.glow);
+    look.glow_k = t.glow_k;
+    look.glow2 = HexFloats(t.glow2);
+    look.ambient_k = t.ambient_k;
+    look.glass_top = surface;
+    look.glass_bottom = Canvas::Mix(surface, kBlack, 0.45f);
+    look.progress_end = Canvas::Mix(accent2, kWhite, 0.25f);
+    g_look = index <= 0 ? ThemeLook{} : look;
+
+    using namespace Palette;
+    if (index <= 0) {
+        // Midnight keeps its hand-picked values.
+        kColBg = MakeColor(0x06, 0x07, 0x0B);
+        kColRail = MakeColor(0x2A, 0x2A, 0x36);
+        kColSurface = MakeColor(0x1C, 0x1C, 0x26);
+        kColSurfaceHi = MakeColor(0x2A, 0x2A, 0x38);
+        kColBadge = MakeColor(0x34, 0x33, 0x42);
+        kColAccentDim = MakeColor(0x1E, 0x4E, 0x52);
+        kColOnAccent = MakeColor(0x04, 0x1A, 0x19);
+    } else {
+        kColBg = bg;
+        kColRail = Canvas::Mix(surface, kBlack, 0.05f);
+        kColSurface = Canvas::Mix(surface, kBlack, 0.36f);
+        kColSurfaceHi = Canvas::Mix(surface, kBlack, 0.04f);
+        kColBadge = Canvas::Mix(surface, kWhite, 0.08f);
+        kColAccentDim = Canvas::Mix(accent, kBlack, 0.66f);
+        kColOnAccent = Canvas::Mix(accent, kBlack, 0.9f);
+    }
+    kColHintBar = kColBg;
+    kColAccent = accent;
+    kColAccent2 = accent2;
+    kColTextDim = HexColor(t.text_dim);
+    // Sprites baked in the old colours go.
+    TrimCache(true);
+}
+
 void EndWarmup() {
     g_may_build.store(false);
 }
@@ -667,6 +746,14 @@ void SetSystemImage(const std::string& id, std::vector<u32> rgba, int w, int h) 
 void SetGameImage(const std::string& path, std::vector<u32> rgba, int w, int h) {
     SetGameImage(path, FromRgba(std::move(rgba), w, h));
 }
+void SetProfileName(std::string_view name) {
+    g_profile_initial.clear();
+    // Only a plain letter or digit: the menu's font has no glyphs for other scripts.
+    if (!name.empty() && std::isalnum(static_cast<unsigned char>(name.front()))) {
+        g_profile_initial.assign(1, static_cast<char>(std::toupper(static_cast<unsigned char>(name.front()))));
+    }
+}
+
 void SetAvatar(std::vector<u32> rgba, int w, int h) {
     g_avatar = FromRgba(std::move(rgba), w, h);
     ++g_avatar_id;
@@ -700,14 +787,19 @@ void DrawTopBar(Canvas& c, const Fonts& f, const TopBar& bar) {
         if (!g_avatar.Empty()) {
             t.DrawImageScaled(g_avatar, float(ax - r), float(ay - r), float(2 * r), float(2 * r), r);
         } else {
+            // No profile picture: the profile's initial, or a person, never the game's name.
             t.FillRoundGradient(ax - r, ay - r, 2 * r, 2 * r, r, MakeColor(0x6A, 0x60, 0x96), MakeColor(0x3A, 0x34, 0x5C));
-            const std::string first = bar.title.empty() ? "?" : std::string(bar.title.substr(0, 1));
-            const int w = f.bold->Measure(first, 28);
-            f.bold->Draw(t, ax - w / 2, ay + 10, first, 28, kColText);
+            if (!g_profile_initial.empty()) {
+                const int w = f.bold->Measure(g_profile_initial, 28);
+                f.bold->Draw(t, ax - w / 2, ay + 10, g_profile_initial, 28, kColText);
+            } else {
+                t.Disc(float(ax), float(ay - 7), 10.0f, White(0xD8));
+                t.FillRoundAA(ax - 15, ay + 6, 30, 18, 9, White(0xD8));
+            }
         }
     };
     constexpr int kAv = 56; // half the sprite
-    const std::string_view letter = g_avatar.Empty() && !bar.title.empty() ? bar.title.substr(0, 1) : std::string_view{};
+    const std::string_view letter = g_avatar.Empty() ? std::string_view{g_profile_initial} : std::string_view{};
     const auto av = Cached(Key({6, g_avatar_id, std::hash<std::string_view>{}(letter)}), false, [&] {
         return Gfx::RenderSprite(2 * kAv, 2 * kAv, kAv, kAv, [&](Canvas& t) { avatar(t, 0, 0); });
     });
@@ -1426,7 +1518,7 @@ void DrawRow(Canvas& c, int x, int y, int w, int h, bool focused) {
 void DrawPill(Canvas& c, int x, int y, int w, int h, bool active) {
     if (active) {
         c.Glow(x, y, w, h, h / 2, 12, WithAlpha(kColAccent, 0x40), true, 3);
-        c.FillRoundAAPix(x, y, w, h, h / 2, [](float fx, float) { return Canvas::Mix(kColAccent, MakeColor(0xA8, 0x9E, 0xFF), fx); });
+        c.FillRoundAAPix(x, y, w, h, h / 2, [](float fx, float) { return Canvas::Mix(kColAccent, g_look.progress_end, fx); });
     } else {
         c.FillRoundAA(x, y, w, h, h / 2, White(0x10));
         c.RingRoundAA(x, y, w, h, h / 2, 1.0f, White(0x1A));
