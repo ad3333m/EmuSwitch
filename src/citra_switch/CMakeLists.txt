@@ -26,6 +26,8 @@ add_executable(citra_switch
     emu_window.cpp
     emu_window.h
     emulation.cpp
+    game_clocks.cpp
+    game_clocks.h
     harfbuzz_stubs.cpp
     # The exception entry stub must be a strong symbol in the executable itself so the linker picks
     # it over libnx's weak __libnx_exception_entry.

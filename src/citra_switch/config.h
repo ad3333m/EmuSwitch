@@ -98,6 +98,10 @@ void SetMenuTheme(int theme);
 int MenuThemeCount();
 const char* MenuThemeName(int theme);
 
+// Whether the Switch's CPU runs at 1785 MHz while a game plays.
+bool IsGameCpuBoostEnabled();
+void SetGameCpuBoostEnabled(bool enabled);
+
 // The player's SteamGridDB API key (steamgriddb.com > Preferences > API), or empty.
 std::string GetSteamGridDbKey();
 void SetSteamGridDbKey(const std::string& key);
@@ -147,6 +151,9 @@ void ClearPerGameConfig();
 std::uint64_t GetPerGameConfigId();
 
 bool HasPerGameConfig(std::uint64_t program_id);
+
+// Removes a game's own settings, e.g. when the game itself is deleted.
+void DeletePerGameConfig(std::uint64_t program_id);
 
 int CountPerGameOverrides();
 

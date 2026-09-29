@@ -857,4 +857,175 @@ bool DirectoryExists(const std::string& directory) {
     return !directory.empty() && FileUtil::IsDirectory(directory);
 }
 
+namespace {
+
+std::string ParentDir(const std::string& path) {
+    const std::size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? std::string{} : path.substr(0, slash);
+}
+
+std::string LowerExt(const std::string& path) {
+    const std::size_t dot = path.find_last_of('.');
+    const std::size_t slash = path.find_last_of('/');
+    if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) {
+        return {};
+    }
+    return Common::ToLower(path.substr(dot));
+}
+
+std::string Trimmed(std::string text) {
+    const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+    while (!text.empty() && space(text.back())) {
+        text.pop_back();
+    }
+    std::size_t start = 0;
+    while (start < text.size() && space(text[start])) {
+        ++start;
+    }
+    return text.substr(start);
+}
+
+// Adds the files that go with `path` to `out`: a .cue sheet's tracks, an .m3u list's discs (and
+// their tracks), a CloneCD image's .img and .sub, a 3dsx's .smdh. Only files in the game's own
+// folder or below it count, so a list pointing elsewhere can't take anything else with it.
+void AddCompanions(const std::string& path, std::vector<std::string>& out, int depth = 0) {
+    const std::string dir = ParentDir(path) + "/";
+    const std::string ext = LowerExt(path);
+    const std::string name = path.substr(dir.size());
+    const std::string base = name.substr(0, name.size() - ext.size());
+    const auto add = [&](std::string file) {
+        std::replace(file.begin(), file.end(), '\\', '/');
+        if (file.empty() || file.front() == '/' || file.find(':') != std::string::npos ||
+            file.find("..") != std::string::npos) {
+            return;
+        }
+        const std::string full = dir + file;
+        if (std::find(out.begin(), out.end(), full) != out.end() || full == path ||
+            !FileUtil::Exists(full) || FileUtil::IsDirectory(full)) {
+            return;
+        }
+        out.push_back(full);
+        if (depth < 2) {
+            AddCompanions(full, out, depth + 1); // an .m3u's discs can be .cue sheets
+        }
+    };
+
+    if (ext == ".3dsx") {
+        add(base + ".smdh");
+    } else if (ext == ".ccd") {
+        add(base + ".img");
+        add(base + ".sub");
+    } else if (ext == ".cue" || ext == ".m3u") {
+        std::string text;
+        if (FileUtil::ReadFileToString(true, path, text) == 0 || text.size() > (1u << 20)) {
+            return;
+        }
+        std::size_t start = 0;
+        while (start < text.size()) {
+            std::size_t end = text.find('\n', start);
+            if (end == std::string::npos) {
+                end = text.size();
+            }
+            const std::string line = Trimmed(text.substr(start, end - start));
+            start = end + 1;
+            if (line.empty() || line.front() == '#') {
+                continue;
+            }
+            if (ext == ".m3u") {
+                add(line);
+                continue;
+            }
+            // FILE "Track 01.bin" BINARY
+            if (line.size() < 5 || Common::ToLower(line.substr(0, 5)) != "file ") {
+                continue;
+            }
+            const std::string rest = Trimmed(line.substr(5));
+            if (!rest.empty() && rest.front() == '"') {
+                const std::size_t close = rest.find('"', 1);
+                if (close != std::string::npos) {
+                    add(rest.substr(1, close - 1));
+                }
+            } else {
+                add(rest.substr(0, rest.find(' ')));
+            }
+        }
+    }
+}
+
+// A Wii U game unpacked into code/, content/ and meta/ folders: the folder holding those three,
+// or empty when `rpx` isn't laid out like that.
+std::string UnpackedWiiURoot(const std::string& rpx) {
+    const std::string code = ParentDir(rpx);
+    if (Common::ToLower(code.substr(code.find_last_of('/') + 1)) != "code") {
+        return {};
+    }
+    const std::string root = ParentDir(code);
+    if (root.empty() || !FileUtil::IsDirectory(root + "/content") ||
+        !FileUtil::IsDirectory(root + "/meta")) {
+        return {};
+    }
+    return root;
+}
+
+} // namespace
+
+bool DeleteGameFiles(const GameEntry& game, std::string& error) {
+    using Service::FS::MediaType;
+    if (game.installed) {
+        const std::uint64_t tid = game.program_id;
+        const std::uint64_t high = tid & 0xFFFFFFFF00000000ULL;
+        // Only what's installed on the emulated SD card; the system's own applications stay.
+        if (high != kTidHighApplication && high != kTidHighDemo) {
+            error = "System titles can't be deleted";
+            return false;
+        }
+        if (Service::AM::UninstallProgram(MediaType::SDMC, tid).IsError()) {
+            error = "Couldn't uninstall it";
+            return false;
+        }
+        const std::uint64_t low = tid & 0xFFFFFFFFULL;
+        constexpr std::uint64_t kTidHighUpdate = 0x0004000E00000000ULL;
+        constexpr std::uint64_t kTidHighDlc = 0x0004008C00000000ULL;
+        Service::AM::UninstallProgram(MediaType::SDMC, kTidHighUpdate | low);
+        Service::AM::UninstallProgram(MediaType::SDMC, kTidHighDlc | low);
+        // The CIAs it was installed from, or the next scan would install it all again.
+        for (const std::string& cia : s_scan_cias) {
+            CiaEntry entry;
+            if (!ReadCiaEntry(cia, entry) || (entry.program_id & 0xFFFFFFFFULL) != low) {
+                continue;
+            }
+            const std::uint64_t cia_high = entry.program_id & 0xFFFFFFFF00000000ULL;
+            if (cia_high == kTidHighApplication || cia_high == kTidHighDemo ||
+                cia_high == kTidHighUpdate || cia_high == kTidHighDlc) {
+                FileUtil::Delete(cia);
+            }
+        }
+        LOG_INFO(Frontend, "Deleted installed title {:016X}", tid);
+        return true;
+    }
+
+    if (!FileUtil::Exists(game.path)) {
+        return true; // already gone; the next scan drops it
+    }
+    std::vector<std::string> companions;
+    AddCompanions(game.path, companions);
+    const std::string wiiu_root = LowerExt(game.path) == ".rpx" ? UnpackedWiiURoot(game.path) : "";
+    if (!FileUtil::Delete(game.path)) {
+        error = "Couldn't delete the file";
+        return false;
+    }
+    for (const std::string& file : companions) {
+        FileUtil::Delete(file);
+    }
+    if (!wiiu_root.empty()) {
+        // Only the game's own three folders, then the folder itself if that emptied it.
+        for (const char* sub : {"/code", "/content", "/meta"}) {
+            FileUtil::DeleteDirRecursively(wiiu_root + sub);
+        }
+        FileUtil::DeleteDir(wiiu_root);
+    }
+    LOG_INFO(Frontend, "Deleted {} and {} file(s) with it", game.path, companions.size());
+    return true;
+}
+
 } // namespace SwitchFrontend

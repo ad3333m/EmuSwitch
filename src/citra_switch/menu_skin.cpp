@@ -972,6 +972,89 @@ void DrawEmptySlot(Canvas& c, int x, int y, float alpha) {
     c.Disc(x + kTileW / 2.0f, y + kTileH / 2.0f, 2.6f, White(0x40));
 }
 
+void DrawThemeCard(Canvas& c, const Fonts& f, int x, int y, int w, int h, int theme, bool focused,
+                   bool active, float t) {
+    const Theme& th = ThemeAt(theme);
+    constexpr int kNameH = 34;
+    constexpr int kRadius = 16;
+    const int ph = h - kNameH;
+    if (focused) {
+        c.RingRoundAAWith(x - 5, y - 5, w + 10, ph + 10, kRadius + 5, 3.0f,
+                          [&](float p) { return RingAt(p, t * 0.1f); });
+    }
+    c.SoftShadow(x, y, w, ph, kRadius, 12, 4, 110);
+
+    // The theme's backdrop: its gradient, the big glow rising from the bottom-left corner and
+    // the faint second one on the right.
+    const auto top = HexFloats(th.bg_top);
+    const auto bottom = HexFloats(th.bg_bottom);
+    const auto glow = HexFloats(th.glow);
+    const auto glow2 = HexFloats(th.glow2);
+    const float aspect = static_cast<float>(ph) / static_cast<float>(std::max(1, w));
+    c.FillRoundAAPix(x, y, w, ph, kRadius, [&](float fx, float fy) {
+        const float dx = fx - 0.08f, dy = (fy - 1.05f) * aspect;
+        const float g = std::max(0.0f, 1.0f - std::sqrt(dx * dx + dy * dy) / 0.9f);
+        const float dx2 = fx - 0.9f, dy2 = (fy - 0.3f) * aspect;
+        const float g2 = std::max(0.0f, 1.0f - std::sqrt(dx2 * dx2 + dy2 * dy2) / 0.75f);
+        const float k = g * g * th.glow_k * 2.4f;
+        const float k2 = g2 * g2 * 0.4f;
+        u8 rgb[3];
+        for (int i = 0; i < 3; ++i) {
+            const float v = top[i] + (bottom[i] - top[i]) * fy + glow[i] * k + glow2[i] * k2;
+            rgb[i] = static_cast<u8>(std::clamp(v, 0.0f, 255.0f));
+        }
+        return MakeColor(rgb[0], rgb[1], rgb[2]);
+    });
+
+    // Three game tiles in the theme's glass, the first one focused with the theme's own ring.
+    const u32 a1 = HexColor(th.accent), a2 = HexColor(th.accent2), a3 = HexColor(th.accent3);
+    const u32 glass = WithAlpha(HexColor(th.surface), 0xF0);
+    const int pad = std::max(12, w / 12);
+    constexpr int kTileGap = 10;
+    const int dock_h = std::max(12, ph / 8);
+    const int tile = std::max(8, std::min((w - pad * 2 - kTileGap * 2) / 3, ph - pad * 2 - dock_h - 14));
+    const int ty = y + pad;
+    const u32 art[3] = {a1, a2, a3};
+    for (int i = 0; i < 3; ++i) {
+        const int tx = x + pad + i * (tile + kTileGap);
+        c.FillRoundAA(tx, ty, tile, tile, tile / 5, glass);
+        const int inset = tile / 4;
+        c.FillRoundAA(tx + inset, ty + inset, tile - inset * 2, tile - inset * 2, tile / 8,
+                      WithAlpha(art[i], 0x70));
+    }
+    c.RingRoundAAWith(x + pad - 4, ty - 4, tile + 8, tile + 8, tile / 5 + 4, 2.4f, [&](float p) {
+        return p < 0.5f ? Canvas::Mix(a1, a2, p * 2.0f) : Canvas::Mix(a2, a3, (p - 0.5f) * 2.0f);
+    });
+
+    // The dock: a glass pill with Home lit in the accent.
+    const int dw = w * 46 / 100;
+    const int dx = x + (w - dw) / 2;
+    const int dy = y + ph - pad / 2 - dock_h;
+    c.FillRoundAA(dx, dy, dw, dock_h, dock_h / 2, glass);
+    const float cy = dy + dock_h / 2.0f;
+    const float step = (dw - dock_h) / 3.0f;
+    c.Disc(dx + dock_h / 2.0f, cy, dock_h * 0.28f, a1);
+    for (int i = 1; i < 4; ++i) {
+        c.Disc(dx + dock_h / 2.0f + step * i, cy, dock_h * 0.2f, WithAlpha(HexColor(th.text_dim), 0xB0));
+    }
+
+    // The name, and "In use" on the theme the menu has on now.
+    int name_w = w - 4;
+    if (active) {
+        constexpr int kBadgeSize = 13;
+        const char* label = "In use";
+        const int bw = f.bold->Measure(label, kBadgeSize) + 18;
+        const int bh = 22;
+        const int bx = x + w - bw;
+        const int by = y + ph + (kNameH - bh) / 2 + 2;
+        c.FillRoundAA(bx, by, bw, bh, bh / 2, a1);
+        f.bold->Draw(c, bx + 9, by + 16, label, kBadgeSize, Canvas::Mix(a1, MakeColor(0, 0, 0), 0.82f));
+        name_w -= bw + 8;
+    }
+    const u32 name_color = focused ? kColText : kColTextDim;
+    f.bold->Draw(c, x + 4, y + ph + 25, f.bold->Truncate(th.name, 18, name_w), 18, name_color);
+}
+
 void DrawFocusRing(Canvas& c, float x, float y, float w, float t, float alpha) {
     if (alpha <= 0.01f) {
         return;

@@ -13,6 +13,7 @@
 #include "citra_switch/applets/swkbd.h"
 #include "citra_switch/updater.h"
 #include "citra_switch/config.h"
+#include "citra_switch/game_clocks.h"
 #include "citra_switch/input.h"
 #include "citra_switch/menu.h"
 #include "citra_switch/multi_system.h"
@@ -221,7 +222,14 @@ void RunGame(PadState& pad, const std::string& rom) {
     if (SwitchFrontend::BootRom(rom)) {
         u64 prev_held = 0;
         u64 prev_input = 0;
+        SwitchFrontend::GameClocks::Begin();
+        u64 clocks_checked = armGetSystemTick();
         while (appletMainLoop()) {
+            // Loading, docking and sleep can put the stock clock back.
+            if (armTicksToNs(armGetSystemTick() - clocks_checked) > 1'000'000'000ULL) {
+                clocks_checked = armGetSystemTick();
+                SwitchFrontend::GameClocks::Maintain();
+            }
             // Blocks
             SwitchFrontend::PumpKeyboard();
 
@@ -319,6 +327,7 @@ void RunGame(PadState& pad, const std::string& rom) {
         }
         SwitchFrontend::EndRealAmiibo();
         SwitchFrontend::StopRom();
+        SwitchFrontend::GameClocks::End();
         if (std::string reason = SwitchFrontend::TakeHaltReason(); !reason.empty()) {
             SwitchFrontend::SetMenuNotice(reason + ", so the game was closed");
         } else if (SwitchFrontend::ArticDisconnected()) {

@@ -890,8 +890,10 @@ void SOC_U::Bind(Kernel::HLERequestContext& ctx) {
     }
     SocketHolder& holder = socket_holder_optional->get();
 
-    CTRSockAddr ctr_sock_addr;
-    std::memcpy(&ctr_sock_addr, sock_addr_buf.data(), std::min<size_t>(len, sizeof(ctr_sock_addr)));
+    CTRSockAddr ctr_sock_addr{};
+    // The guest's length can be larger than the buffer it actually sent.
+    std::memcpy(&ctr_sock_addr, sock_addr_buf.data(),
+                std::min<size_t>({len, sizeof(ctr_sock_addr), sock_addr_buf.size()}));
 
     auto [sock_addr, sock_addr_len] = CTRSockAddr::ToPlatform(ctr_sock_addr);
 
@@ -1162,9 +1164,9 @@ void SOC_U::SendToOther(Kernel::HLERequestContext& ctx) {
 
     s32 ret = -1;
     if (addr_len > 0) {
-        CTRSockAddr ctr_dest_addr;
+        CTRSockAddr ctr_dest_addr{};
         std::memcpy(&ctr_dest_addr, dest_addr_buffer.data(),
-                    std::min<size_t>(addr_len, sizeof(ctr_dest_addr)));
+                    std::min<size_t>({addr_len, sizeof(ctr_dest_addr), dest_addr_buffer.size()}));
         auto [dest_addr, dest_addr_len] = CTRSockAddr::ToPlatform(ctr_dest_addr);
         ret = static_cast<s32>(
             ::sendto(holder.socket_fd, reinterpret_cast<const char*>(input_buff.data()), len, flags,
@@ -1814,9 +1816,10 @@ void SOC_U::Connect(Kernel::HLERequestContext& ctx) {
     async_data->fd_info = &holder;
     async_data->pid = pid;
 
-    CTRSockAddr ctr_input_addr;
+    CTRSockAddr ctr_input_addr{};
+    // The guest's length can be larger than the buffer it actually sent.
     std::memcpy(&ctr_input_addr, input_addr_buf.data(),
-                std::min<size_t>(input_addr_len, sizeof(ctr_input_addr)));
+                std::min<size_t>({input_addr_len, sizeof(ctr_input_addr), input_addr_buf.size()}));
 
     async_data->input_addr = CTRSockAddr::ToPlatform(ctr_input_addr);
     async_data->socket_handle = socket_handle;

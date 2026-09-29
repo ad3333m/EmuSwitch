@@ -70,6 +70,10 @@ bool PinAsyncGpuThread() {
 }
 
 bool PinGraphicsSupportThread() {
+    // Vulkan submission, fence waits and presentation are short bursts that frames wait on.
+    // Horizon doesn't take turns between threads of equal priority, so at the default they sat
+    // behind the async GPU thread on core 0 until it blocked, and frames missed their vblank.
+    svcSetThreadPriority(CUR_THREAD_HANDLE, 40);
     return PinCurrentThread(CoreFrontend);
 }
 

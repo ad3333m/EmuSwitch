@@ -77,6 +77,7 @@ bool s_menu_input_rotated = false;
 bool s_picture_editing = true;
 bool s_cover_download = true;
 int s_menu_theme = 0;
+bool s_game_cpu_boost = true;
 std::string s_systems_order;
 std::string s_steamgriddb_key;
 int s_ds_screen_layout = 0;
@@ -216,6 +217,12 @@ private:
             // something new was drawn.
             Settings::values.async_shader_compilation = true;
             defaults_version = 1;
+        }
+        if (defaults_version < 2) {
+            // With the PICA and renderer work on the emulation thread, the guest CPU and the GPU
+            // shared one core and games stuttered; only the performance presets moved it off.
+            Settings::values.async_gpu_emulation = true;
+            defaults_version = 2;
         }
 
         if (Settings::values.render_3d.GetValue() == Settings::StereoRenderOption::Off) {
@@ -410,13 +417,14 @@ void ApplyPreset(SwitchFrontend::SettingsPreset preset) {
     auto& v = Settings::values;
 
     // Compiling shaders on the emulation thread stalls the game (and its audio) whenever
-    // something new is drawn; every preset builds them in the background.
+    // something new is drawn; every preset builds them in the background. The PICA and
+    // renderer work gets its own thread too, off the guest CPU's core.
     v.async_shader_compilation = true;
+    v.async_gpu_emulation = true;
     if (preset == SettingsPreset::Default) {
         return;
     }
 
-    v.async_gpu_emulation = true;
     v.shaders_accurate_mul = false;
     v.disable_right_eye_render = true;
     SwitchFrontend::SetMovieThrottleEnabled(true);
@@ -607,6 +615,14 @@ int MenuThemeCount() {
 
 const char* MenuThemeName(int theme) {
     return ThemeAt(theme).name;
+}
+
+bool IsGameCpuBoostEnabled() {
+    return s_game_cpu_boost;
+}
+
+void SetGameCpuBoostEnabled(bool enabled) {
+    s_game_cpu_boost = enabled;
 }
 
 std::string GetSteamGridDbKey() {
@@ -848,6 +864,16 @@ std::uint64_t GetPerGameConfigId() {
 
 bool HasPerGameConfig(std::uint64_t program_id) {
     return program_id != 0 && FileUtil::Exists(PerGameConfigPath(program_id));
+}
+
+void DeletePerGameConfig(std::uint64_t program_id) {
+    if (program_id == 0) {
+        return;
+    }
+    if (s_per_game_id == program_id) {
+        ClearPerGameConfig();
+    }
+    FileUtil::Delete(PerGameConfigPath(program_id));
 }
 
 int CountPerGameOverrides() {

@@ -118,6 +118,13 @@ std::vector<CiaEntry> ListCiaFiles(const std::string& directory);
 // The .cia/.zcia files the last ScanGames() came across in the ROM folders.
 std::vector<std::string> ScannedCiaFiles();
 
+// Deletes `game` from the SD card: its file with the ones that belong to it (a .cue sheet's
+// tracks, an .m3u list's discs, a CloneCD image's .img and .sub, a 3dsx's .smdh, an unpacked
+// Wii U game's folders), or for a title installed on the emulated SD card, the title with its
+// update and DLC and the CIAs in the ROM folders it came from. Save data stays. False, with
+// `error` set, if the game itself couldn't be removed.
+bool DeleteGameFiles(const GameEntry& game, std::string& error);
+
 // Of `paths`, the CIAs that aren't installed yet (or are newer than what is). Reads each file's
 // header, so best run off the menu's thread.
 std::vector<CiaEntry> CiasToInstall(const std::vector<std::string>& paths);

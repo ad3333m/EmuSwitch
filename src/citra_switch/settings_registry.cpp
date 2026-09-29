@@ -1233,6 +1233,11 @@ void BuildAdvanced(std::vector<SettingEntry>& out) {
 
     t.Group("CPU");
     t.Ini("Core");
+    t << LocalBool("game_cpu_boost",
+                   {"Faster Switch CPU",
+                    "Runs the Switch's CPU at 1785 MHz while a game plays, the speed the system uses "
+                    "for loading screens. Smoother games, a little more battery."},
+                   IsGameCpuBoostEnabled, SetGameCpuBoostEnabled, true);
     t << Toggle({"CPU JIT", "Compiles guest ARM11 code. Turning this off is far slower.",
                  EntryFlag::Restart},
                 v.use_cpu_jit);
@@ -1289,8 +1294,12 @@ void BuildAdvanced(std::vector<SettingEntry>& out) {
                 "Preferences > API."},
                SettingsModal::SteamGridDbKey,
                [] { return std::string{GetSteamGridDbKey().empty() ? "Not set" : "Set"}; });
+}
 
-    // The very last entry.
+// The Themes page draws its own grid of theme pictures (menu.cpp); this entry is what saves
+// the choice, and what a search for "theme" finds.
+void BuildThemes(std::vector<SettingEntry>& out) {
+    Table t{out, Category::Themes};
     t.Group("Theme");
     t << LocalEnum("menu_theme",
                    {"Theme", "The colours of the menus and of the in-game quick menu."},
@@ -1301,6 +1310,7 @@ std::vector<SettingEntry> BuildRegistry() {
     std::vector<SettingEntry> entries;
     entries.reserve(160);
     BuildGeneral(entries);
+    BuildThemes(entries);
     BuildGraphics(entries);
     BuildEnhancements(entries);
     BuildStereo3D(entries);
@@ -1329,6 +1339,8 @@ const char* CategoryName(Category category) {
     switch (category) {
     case Category::General:
         return "General";
+    case Category::Themes:
+        return "Themes";
     case Category::Graphics:
         return "Graphics";
     case Category::Enhancements:

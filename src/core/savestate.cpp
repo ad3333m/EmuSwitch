@@ -2,6 +2,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
 #include <chrono>
 #include <istream>
 #include <sstream>
@@ -192,7 +193,9 @@ void System::SaveState(u32 slot) const {
     std::string rev_bytes;
     CryptoPP::StringSource ss(Common::g_scm_rev, true,
                               new CryptoPP::HexDecoder(new CryptoPP::StringSink(rev_bytes)));
-    std::memcpy(header.revision.data(), rev_bytes.data(), sizeof(header.revision));
+    // A build made outside git has a short (or no) revision; never read past it.
+    std::memcpy(header.revision.data(), rev_bytes.data(),
+                std::min(rev_bytes.size(), sizeof(header.revision)));
     header.time = std::chrono::duration_cast<std::chrono::seconds>(
                       std::chrono::system_clock::now().time_since_epoch())
                       .count();
@@ -277,7 +280,9 @@ std::vector<u8> System::SaveStateBuffer() const {
     std::string rev_bytes;
     CryptoPP::StringSource ss(Common::g_scm_rev, true,
                               new CryptoPP::HexDecoder(new CryptoPP::StringSink(rev_bytes)));
-    std::memcpy(header.revision.data(), rev_bytes.data(), sizeof(header.revision));
+    // A build made outside git has a short (or no) revision; never read past it.
+    std::memcpy(header.revision.data(), rev_bytes.data(),
+                std::min(rev_bytes.size(), sizeof(header.revision)));
     header.time = std::chrono::duration_cast<std::chrono::seconds>(
                       std::chrono::system_clock::now().time_since_epoch())
                       .count();

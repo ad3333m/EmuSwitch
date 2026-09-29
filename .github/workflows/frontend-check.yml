@@ -44,7 +44,7 @@ jobs:
       - name: Compile the frontend
         run: |
           cd build/switch/src/citra_switch
-          for f in menu_gfx menu_skin menu_skin_art custom_art multi_handoff multi_system emu_zip menu_data menu citra_switch config emulation emu_window overlay_menu settings_registry cover_fetch steamgriddb; do
+          for f in menu_gfx menu_skin menu_skin_art custom_art multi_handoff multi_system emu_zip menu_data menu citra_switch config emulation emu_window overlay_menu settings_registry cover_fetch steamgriddb game_clocks; do
             echo "::group::$f"
             make "$f.o" || make "$f.cpp.o"
             echo "::endgroup::"

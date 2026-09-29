@@ -1102,6 +1102,9 @@ private:
 
     // Settings tab.
     Category settings_page{Category::General};
+    // Settings > Themes: the theme under the cursor and the first card row on screen.
+    int theme_sel = 0;
+    int theme_scroll = 0;
     std::vector<SettingsRow> settings_rows;
     // Kept per page so switching back lands where the cursor was left.
     std::array<int, NumCategories> settings_sel{};
@@ -1328,6 +1331,10 @@ private:
     void SetSettingsPage(Category page) {
         settings_search_open = false;
         RefreshUniqueDataStatus();
+        if (page == Category::Themes && settings_page != Category::Themes) {
+            theme_sel = GetMenuTheme();
+            theme_scroll = 0;
+        }
         settings_page = page;
         settings_rows = PerGameOpen() ? BuildGameCategoryRows(page) : BuildCategoryRows(page);
         SettingsSel() = SettleSettingsSelection(SettingsSel(), +1);
@@ -2108,6 +2115,10 @@ private:
         if (down & HidNpadButton_R) {
             StepSettingsPage(+1);
         }
+        if (ThemesPageShown()) {
+            HandleThemes(down, nav);
+            return false;
+        }
         if (settings_rows.empty()) {
             if (down & HidNpadButton_B) {
                 if (PerGameOpen()) {
@@ -2765,7 +2776,7 @@ private:
         if (tab == Tab::Library) {
             if (game_menu != GameMenu::None) {
                 // A row picks it; anywhere else closes the menu.
-                for (int r = 0; r < kGameMenuRows; ++r) {
+                for (int r = 0; r < GameMenuRows(); ++r) {
                     if (GameMenuRowRect(r).Contains(tx, ty)) {
                         ChooseGameMenuRow(r);
                         return;
@@ -2840,6 +2851,16 @@ private:
                     : SettingsTabHitTest(tx, ty, static_cast<int>(settings_page));
             if (page) {
                 SetSettingsPage(static_cast<Category>(*page));
+                return;
+            }
+            if (ThemesPageShown()) {
+                for (int i = theme_scroll * kThemeCols; i < MenuThemeCount(); ++i) {
+                    if (ThemeCardRect(i).Contains(tx, ty)) {
+                        theme_sel = i;
+                        UseTheme(i);
+                        break;
+                    }
+                }
                 return;
             }
             const int visible = (ty - kSettingsTop) / kSettingsRowStride;
@@ -3887,7 +3908,8 @@ private:
         SaveConfig();
     }
 
-    // ---- Home: the + menu (Move Placement, Info) and the picture menu (SD Card, SteamGridDB) ----
+    // ---- Home: the + menu (Move Placement, Info, Delete) and the picture menu (SD Card,
+    // SteamGridDB) ----
 
     enum class GameMenu { None, Actions, Picture };
     GameMenu game_menu = GameMenu::None;
@@ -3900,7 +3922,6 @@ private:
     // The player's order of the games: path -> place. Games it doesn't list go after, by title.
     std::unordered_map<std::string, int> game_rank;
 
-    static constexpr int kGameMenuRows = 2;
     static constexpr int kGameMenuRowStep = 58;
     static constexpr const char* kGameOrderPath = "sdmc:/switch/emuswitch/game_order.txt";
 
@@ -3974,6 +3995,10 @@ private:
         }
     }
 
+    int GameMenuRows() const {
+        return game_menu == GameMenu::Picture ? 2 : 3;
+    }
+
     void OpenGameMenu(GameMenu menu) {
         game_menu = menu;
         game_menu_sel = 0;
@@ -3985,7 +4010,7 @@ private:
             game_menu_sel = std::max(0, game_menu_sel - 1);
         }
         if (nav & DirDown) {
-            game_menu_sel = std::min(kGameMenuRows - 1, game_menu_sel + 1);
+            game_menu_sel = std::min(GameMenuRows() - 1, game_menu_sel + 1);
         }
         // The button that opened a menu closes it again.
         const u64 closers =
@@ -4007,14 +4032,62 @@ private:
         if (menu == GameMenu::Actions) {
             if (row == 0) {
                 BeginGameMove();
-            } else {
+            } else if (row == 1) {
                 OpenDetails();
+            } else {
+                OpenDeleteGameConfirm(game);
             }
         } else if (row == 0) {
             PickGamePicture(game);
         } else {
             PickSteamGridPicture(game);
         }
+    }
+
+    void OpenDeleteGameConfirm(const GameEntry& game) {
+        std::vector<std::string> lines{"\"" + g_font.Truncate(game.title, 18, 460) + "\""};
+        lines.push_back(game.installed ? "is uninstalled and deleted from the SD card,"
+                                       : "is deleted from the SD card.");
+        if (game.installed) {
+            lines.push_back("with its update and DLC.");
+        }
+        confirm = ConfirmPrompt{"Delete game",
+                                std::move(lines),
+                                "This can't be undone. Its save data is kept.",
+                                "Delete",
+                                [this, game] { RunDeleteGame(game); },
+                                {}};
+    }
+
+    void RunDeleteGame(const GameEntry& game) {
+        ShowBusy("Deleting...");
+        std::string error;
+        if (!DeleteGameFiles(game, error)) {
+            ShowNotice(error, true);
+            return;
+        }
+        // What the menu kept for it: its pictures, its settings, its place in the order.
+        const std::string stem = Art::PictureStem(game);
+        for (const char* dir : {"sdmc:/switch/emuswitch/covers/", "sdmc:/switch/emuswitch/steamgriddb/"}) {
+            for (const char* ext : {".png", ".jpg", ".jpeg", ".webp"}) {
+                std::remove((std::string{dir} + stem + ext).c_str());
+            }
+        }
+        Art::SetGameArt(game, "");
+        if (game.system < 0 && game.program_id != 0) {
+            DeletePerGameConfig(game.program_id);
+        }
+        if (GetInsertedCartridge() == game.path) {
+            SetInsertedCartridge("");
+        }
+        const bool had_rank = game_rank.erase(game.path) > 0;
+        const int keep = selected;
+        Rescan();
+        selected = filtered.empty() ? 0 : std::min(keep, static_cast<int>(filtered.size()) - 1);
+        if (had_rank) {
+            SaveGameOrder();
+        }
+        ShowNotice("Deleted " + game.title, false);
     }
 
     void OpenDetails() {
@@ -4124,7 +4197,7 @@ private:
     }
 
     Rect GameMenuRect() const {
-        const int w = 420, h = 44 + kGameMenuRows * kGameMenuRowStep + 52;
+        const int w = 420, h = 44 + GameMenuRows() * kGameMenuRowStep + 52;
         return {(g_screen_w - w) / 2, (g_screen_h - h) / 2 - 20, w, h};
     }
     Rect GameMenuRowRect(int row) const {
@@ -4146,17 +4219,21 @@ private:
         const bool picture = game_menu == GameMenu::Picture;
         const std::string heading = picture ? "Picture for " + game.title : game.title;
         g_font.Draw(c, p.x + 24, p.y + 30, g_font.Truncate(heading, 16, p.w - 48), 16, kColTextDim);
-        static constexpr const char* kActionRows[kGameMenuRows] = {"Move Placement", "Info"};
-        static constexpr const char* kPictureRows[kGameMenuRows] = {"SD Card", "SteamGridDB"};
+        static constexpr const char* kActionRows[] = {"Move Placement", "Info", "Delete"};
+        static constexpr const char* kPictureRows[] = {"SD Card", "SteamGridDB"};
         const bool no_key = picture && GetSteamGridDbKey().empty();
-        for (int r = 0; r < kGameMenuRows; ++r) {
+        for (int r = 0; r < GameMenuRows(); ++r) {
             const Rect row = GameMenuRowRect(r);
             const bool on = r == game_menu_sel;
             if (on) {
                 Skin::DrawRow(c, row.x, row.y, row.w, row.h, true);
             }
-            g_font_bold.Draw(c, row.x + 24, CenterBaseline(row.y, row.h, 21), (picture ? kPictureRows : kActionRows)[r],
-                             21, on ? kColText : kColTextDim);
+            // Delete is the one that can't be taken back, so it reads in red.
+            const bool danger = !picture && r == 2;
+            const u32 color = danger ? (on ? kColError : WithAlpha(kColError, 0xC8))
+                                     : (on ? kColText : kColTextDim);
+            g_font_bold.Draw(c, row.x + 24, CenterBaseline(row.y, row.h, 21),
+                             (picture ? kPictureRows : kActionRows)[r], 21, color);
             if (no_key && r == 1) {
                 const char* note = "Needs an API key";
                 g_font.Draw(c, row.x + row.w - 22 - g_font.Measure(note, 15), CenterBaseline(row.y, row.h, 15), note, 15,
@@ -4802,6 +4879,10 @@ private:
 
     void DrawSettingsPage(Canvas& c) {
         DrawSettingsTabs(c);
+        if (ThemesPageShown()) {
+            DrawThemes(c);
+            return;
+        }
 
         const bool content_focus = focus == Focus::Content;
         const int count = static_cast<int>(settings_rows.size());
@@ -4886,6 +4967,123 @@ private:
                            settings_search_open ? "Back" : PerGameOpen() ? "Done" : "Menu") + 22;
             DrawHint(c, hx, hy, "+ -", "Exit");
         }
+    }
+
+    // ---- Settings > Themes: every theme as a small picture of the menu in its colours ----------
+
+    static constexpr int kThemeCols = 5;
+    static constexpr int kThemeGapX = 18;
+    static constexpr int kThemeGapY = 18;
+
+    bool ThemesPageShown() const {
+        return tab == Tab::Settings && settings_page == Category::Themes && !settings_search_open &&
+               !PerGameOpen();
+    }
+
+    int ThemeCardW() const {
+        return (ContentW() - 48 - (kThemeCols - 1) * kThemeGapX) / kThemeCols;
+    }
+
+    int ThemeCardH() const {
+        return ThemeCardW() * 9 / 16 + 34;
+    }
+
+    int ThemeRowsVisible() const {
+        const int space = ContentBottom() - kSettingsFooterH - kSettingsTop - 8;
+        return std::max(1, (space + kThemeGapY) / (ThemeCardH() + kThemeGapY));
+    }
+
+    Rect ThemeCardRect(int index) const {
+        const int row = index / kThemeCols - theme_scroll;
+        const int col = index % kThemeCols;
+        return {kContentX + 24 + col * (ThemeCardW() + kThemeGapX),
+                kSettingsTop + 8 + row * (ThemeCardH() + kThemeGapY), ThemeCardW(), ThemeCardH()};
+    }
+
+    void ScrollThemeIntoView() {
+        const int rows = (MenuThemeCount() + kThemeCols - 1) / kThemeCols;
+        const int visible = ThemeRowsVisible();
+        const int row = theme_sel / kThemeCols;
+        if (row < theme_scroll) {
+            theme_scroll = row;
+        } else if (row >= theme_scroll + visible) {
+            theme_scroll = row - visible + 1;
+        }
+        theme_scroll = std::clamp(theme_scroll, 0, std::max(0, rows - visible));
+    }
+
+    // Puts the theme on right away; the settings file is written when the page is left.
+    void UseTheme(int index) {
+        if (index == GetMenuTheme()) {
+            return;
+        }
+        SetMenuTheme(index);
+        settings_dirty = true;
+    }
+
+    void HandleThemes(u64 down, u32 nav) {
+        const int count = MenuThemeCount();
+        if (nav & DirLeft) {
+            theme_sel = std::max(0, theme_sel - 1);
+        }
+        if (nav & DirRight) {
+            theme_sel = std::min(count - 1, theme_sel + 1);
+        }
+        if (nav & DirUp) {
+            theme_sel = std::max(theme_sel % kThemeCols, theme_sel - kThemeCols);
+        }
+        if (nav & DirDown) {
+            theme_sel = std::min(count - 1, theme_sel + kThemeCols);
+        }
+        ScrollThemeIntoView();
+        if (down & HidNpadButton_A) {
+            UseTheme(theme_sel);
+        }
+        if (down & HidNpadButton_B) {
+            EnterRail();
+        }
+    }
+
+    void DrawThemes(Canvas& c) {
+        ScrollThemeIntoView();
+        const int count = MenuThemeCount();
+        const bool content_focus = focus == Focus::Content;
+        const float t = static_cast<float>(NowSeconds());
+        const int first = theme_scroll * kThemeCols;
+        const int last = std::min(count, first + ThemeRowsVisible() * kThemeCols);
+        for (int i = first; i < last; ++i) {
+            const Rect r = ThemeCardRect(i);
+            Skin::DrawThemeCard(c, SkinFonts(), r.x, r.y, r.w, r.h, i,
+                                content_focus && i == theme_sel, i == GetMenuTheme(), t);
+        }
+        const int rows = (count + kThemeCols - 1) / kThemeCols;
+        DrawListScrollbar(c, g_screen_w - 20, kSettingsTop, ThemeRowsVisible(),
+                          ThemeCardH() + kThemeGapY, rows, theme_scroll);
+
+        const int x = kContentX + 24;
+        const int w = ContentW() - 48;
+        const int footer_y = ContentBottom() - kSettingsFooterH;
+        const std::string name = MenuThemeName(theme_sel);
+        const std::string line = theme_sel == GetMenuTheme()
+                                     ? name + " is the theme in use."
+                                     : name + ". Press A to use it.";
+        g_font.Draw(c, x + 20, footer_y + 16, g_font.Truncate(line, 18, w - 40), 18, kColText);
+        g_font.Draw(c, x + 20, footer_y + 42,
+                    std::to_string(count) +
+                        " themes. They colour the menus and the in-game quick menu.",
+                    18, kColTextDim);
+
+        if (focus == Focus::Rail) {
+            DrawRailHints(c);
+            return;
+        }
+        int hx = HintX();
+        const int hy = g_screen_h - 44;
+        hx += DrawHint(c, hx, hy, "A", "Use") + 22;
+        hx += DrawHint(c, hx, hy, "Y", "Search") + 22;
+        hx += DrawHint(c, hx, hy, "L R", "Page") + 22;
+        hx += DrawHint(c, hx, hy, "B", "Menu") + 22;
+        DrawHint(c, hx, hy, "+ -", "Exit");
     }
 
     void DrawConfirm(Canvas& c) {

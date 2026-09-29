@@ -14,6 +14,7 @@ namespace SwitchFrontend {
 
 enum class Category {
     General,
+    Themes,
     Graphics,
     Enhancements,
     Stereo3D,
