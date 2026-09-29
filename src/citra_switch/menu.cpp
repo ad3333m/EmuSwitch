@@ -89,6 +89,31 @@ double NowSeconds() {
     return static_cast<double>(armTicksToNs(armGetSystemTick() - start)) / 1e9;
 }
 
+// After a game the menu comes in from black, the way the game faded out, instead of cutting in.
+// The fade starts with the first frame drawn; kMenuFadeArmed means it's waiting for it.
+constexpr double kMenuFadeIdle = -1.0;
+constexpr double kMenuFadeArmed = -2.0;
+constexpr double kMenuFadeInSeconds = 0.35;
+double g_menu_fade_start = kMenuFadeIdle;
+
+// How much black still covers the menu (0..1), advancing the fade.
+float MenuFadeCover() {
+    if (g_menu_fade_start == kMenuFadeIdle) {
+        return 0.0f;
+    }
+    const double now = NowSeconds();
+    if (g_menu_fade_start == kMenuFadeArmed) {
+        g_menu_fade_start = now;
+    }
+    const double t = (now - g_menu_fade_start) / kMenuFadeInSeconds;
+    if (t >= 1.0) {
+        g_menu_fade_start = kMenuFadeIdle;
+        return 0.0f;
+    }
+    const float left = static_cast<float>(1.0 - t);
+    return left * left * (3.0f - 2.0f * left);
+}
+
 // Puts the chosen theme into the skin whenever it changes (it can, on the Settings page).
 // Between frames only.
 void ApplyMenuTheme() {
@@ -3463,7 +3488,16 @@ private:
     // in bands across the cores, each band going straight into the framebuffer.
     void RenderFrame(const std::function<void(Canvas&)>& scene) {
         EnsureFramebuffer();
-        RenderToFramebuffer(canvas, fb, scene);
+        const float cover = MenuFadeCover();
+        if (cover <= 0.0f) {
+            RenderToFramebuffer(canvas, fb, scene);
+            return;
+        }
+        const auto alpha = static_cast<u8>(std::lround(255.0f * cover));
+        RenderToFramebuffer(canvas, fb, [&](Canvas& c) {
+            scene(c);
+            c.FillRect(0, 0, c.Width(), c.Height(), MakeColor(0, 0, 0, alpha));
+        });
     }
 
     // One frame of the menu, with `overlay` drawn over it (a blocking prompt, say).
@@ -5432,6 +5466,10 @@ void EndStartupScreen() {
 
 void SetMenuNotice(const std::string& text, bool error) {
     ShowNotice(text, error);
+}
+
+void RequestMenuFadeIn() {
+    g_menu_fade_start = kMenuFadeArmed;
 }
 
 void ShutdownMenu() {

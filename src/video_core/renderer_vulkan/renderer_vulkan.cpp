@@ -2079,32 +2079,42 @@ std::vector<HintPart> SplitHints(const std::string& hint) {
 
 } // namespace
 
+OverlayDraw RendererVulkan::PrepareFade(const Layout::FramebufferLayout& layout, Frame* frame,
+                                        float alpha) {
+    if (alpha <= 0.001f) {
+        return {};
+    }
+    const OverlayCanvas canvas = MakeOverlayCanvas(layout);
+    if (canvas.width <= 0.0f || canvas.height <= 0.0f) {
+        return {};
+    }
+    std::vector<float> verts;
+    OverlayBuilder builder{verts, canvas};
+    builder.AddRect(0.0f, 0.0f, canvas.width, canvas.height);
+    OverlayDraw overlay;
+    if (!UploadOverlayVertices(frame, verts, overlay)) {
+        return {};
+    }
+    overlay.batches.push_back({{0.0f, 0.0f, 0.0f, std::min(alpha, 1.0f)}, 0, builder.VertexCount()});
+    return overlay;
+}
+
 OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& layout,
                                              Frame* frame) {
-    if (VideoCore::IsOverlayBlackout()) {
-        // The game is closing: black over everything, drawn last.
-        const OverlayCanvas canvas = MakeOverlayCanvas(layout);
-        if (canvas.width <= 0.0f || canvas.height <= 0.0f) {
-            return {};
-        }
-        std::vector<float> verts;
-        OverlayBuilder builder{verts, canvas};
-        builder.AddRect(0.0f, 0.0f, canvas.width, canvas.height);
-        OverlayDraw overlay;
-        if (!UploadOverlayVertices(frame, verts, overlay)) {
-            return {};
-        }
-        overlay.batches.push_back({{0.0f, 0.0f, 0.0f, 1.0f}, 0, builder.VertexCount()});
-        return overlay;
+    // The fade to and from black (a game closing, a state loading) goes over everything, the
+    // menu included; when it's all black, nothing under it is worth building.
+    const float fade = VideoCore::GetOverlayFade();
+    if (fade >= 0.999f) {
+        return PrepareFade(layout, frame, 1.0f);
     }
     if (!VideoCore::IsOverlayMenuVisible()) {
         quick_menu_open = 0.0f;
-        return {};
+        return PrepareFade(layout, frame, fade);
     }
     const VideoCore::OverlayMenuState state = VideoCore::GetOverlayMenuState();
     if (!state.visible) {
         quick_menu_open = 0.0f;
-        return {};
+        return PrepareFade(layout, frame, fade);
     }
 
     const OverlayCanvas canvas = MakeOverlayCanvas(layout);
@@ -2457,6 +2467,12 @@ OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& la
             }
             emit({0.8f, 0.8f, 0.86f, 1.0f}, s);
         }
+    }
+
+    if (fade > 0.001f) {
+        const u32 s = builder.VertexCount();
+        builder.AddRect(0.0f, 0.0f, w, h);
+        emit({0.0f, 0.0f, 0.0f, fade}, s);
     }
 
     if (batches.empty()) {

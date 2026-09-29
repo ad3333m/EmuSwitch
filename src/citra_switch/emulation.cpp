@@ -60,6 +60,11 @@ std::atomic<bool> s_movie_throttle_active{false};
 
 // How long the paused loop waits between repaints.
 constexpr auto kPausedFrameInterval = std::chrono::milliseconds(8);
+// The picture fades to black over this before the renderer is torn down (closing a game,
+// loading a state), and back in over kFadeInMs once there's a picture again.
+constexpr u32 kFadeOutMs = 180;
+constexpr u32 kFadeInMs = 320;
+
 constexpr std::int32_t kMovieThrottleClockMin = 10;
 constexpr std::int32_t kMovieThrottleClockMax = 100;
 
@@ -223,6 +228,9 @@ void ReportSaveStateEvent(Core::System& system) {
     if (!event) {
         return;
     }
+    if (event->loading) {
+        VideoCore::FadeOverlayTo(0.0f, kFadeInMs);
+    }
     const char* verb = event->loading ? "Load" : "Save";
     if (event->success) {
         VideoCore::PostOverlayToast(
@@ -268,6 +276,29 @@ std::string ResolveRomPath(const std::string& rom_arg) {
             return true;
         });
     return found;
+}
+
+// Keeps presenting the paused picture (with whatever the overlay has on it) for `ms`.
+void PresentFor(Core::System& system, u32 ms) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < end && !s_stop) {
+        Core::PerfStats::game_frames_updated = true;
+        system.GPU().SwapBuffers();
+        std::this_thread::sleep_for(kPausedFrameInterval);
+    }
+}
+
+// A save or a load freezes the picture for a second or two. The quick menu has just closed, so
+// the game is put back on screen first (with a note, for a save) rather than the menu staying
+// frozen over it; a load, which rebuilds the renderer, fades to black first.
+void PrepareStateOperation(Core::System& system, bool loading) {
+    if (loading) {
+        VideoCore::FadeOverlayTo(1.0f, kFadeOutMs);
+        PresentFor(system, kFadeOutMs + 24);
+    } else {
+        VideoCore::PostOverlayToast("Saving state...", 10000);
+        PresentFor(system, 40);
+    }
 }
 
 void EmuThread(std::string path) {
@@ -319,6 +350,7 @@ void EmuThread(std::string path) {
     }
 
     LOG_INFO(Frontend, "Emulation started (program id {:016X})", program_id);
+    VideoCore::FadeOverlayTo(0.0f, kFadeInMs);
     while (!s_stop) {
         if (s_layout_update_pending.exchange(false, std::memory_order_acq_rel)) {
             // The custom layout is kept as fractions: redo its pixels for the current output,
@@ -345,8 +377,14 @@ void EmuThread(std::string path) {
             continue;
         }
         // A rejected save or load leaves the guest untouched, so keep running.
-        if (result == Core::System::ResultStatus::ErrorSavestate) {
+        if (result == Core::System::ResultStatus::ErrorSavestate ||
+            result == Core::System::ResultStatus::ErrorSavestateBuildMismatch) {
             LOG_ERROR(Frontend, "Save state operation failed: {}", system.GetStatusDetails());
+            VideoCore::FadeOverlayTo(0.0f, kFadeInMs);
+            if (result == Core::System::ResultStatus::ErrorSavestateBuildMismatch) {
+                VideoCore::PostOverlayToast("That state is from a different version of EmuSwitch",
+                                            4000);
+            }
             continue;
         }
         if (result == Core::System::ResultStatus::ShutdownRequested) {
@@ -404,12 +442,14 @@ bool BootRom(const std::string& rom_arg) {
     VideoCore::OverlayTheme overlay_theme;
     ThemeOverlayColors(GetMenuTheme(), overlay_theme.accent, overlay_theme.panel, overlay_theme.scrim);
     VideoCore::SetOverlayTheme(overlay_theme);
-    VideoCore::SetOverlayBlackout(false);
+    VideoCore::SetOverlayFade(1.0f);
 
     // Hand text input to Horizon's swkbd.
     Frontend::RegisterDefaultApplets(system);
     RegisterKeyboard(system);
     RegisterMovieCpuThrottle(system);
+    system.RegisterSaveStatePrepare(
+        [&system](bool loading) { PrepareStateOperation(system, loading); });
 
     // Transfer ownership of the window context from the main thread to the emulation thread.
     auto* window = GetEmuWindow();
@@ -786,11 +826,10 @@ bool ArticDisconnected() {
 
 void StopRom() {
     if (!s_stop && s_emu_thread.joinable()) {
-        // A few black frames first, so the game's last picture doesn't sit frozen on screen
-        // while it closes.
-        s_paused = false;
-        VideoCore::SetOverlayBlackout(true);
-        std::this_thread::sleep_for(std::chrono::milliseconds(70));
+        // The picture fades to black before the renderer goes, rather than cutting. Paused or
+        // not, the emulation thread keeps presenting frames meanwhile.
+        VideoCore::FadeOverlayTo(1.0f, kFadeOutMs);
+        std::this_thread::sleep_for(std::chrono::milliseconds(kFadeOutMs + 30));
     }
     s_stop = true;
     s_paused = false;
@@ -810,7 +849,7 @@ void StopRom() {
     }
     system.EjectCartridge();
     ClearPerGameConfig();
-    VideoCore::SetOverlayBlackout(false);
+    VideoCore::SetOverlayFade(0.0f);
 }
 
 } // namespace SwitchFrontend

@@ -176,6 +176,9 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
         const u32 slot = save_state_slot;
         save_state_request_status = SaveStateStatus::NONE;
         LOG_INFO(Core, "Begin load of slot {}", slot);
+        if (save_state_prepare) {
+            save_state_prepare(true);
+        }
         try {
             state_load_rebuilding = false;
             gpu->WaitIdle();
@@ -203,6 +206,9 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
         save_state_request_status = SaveStateStatus::NONE;
         const u32 slot = save_state_slot;
         LOG_INFO(Core, "Begin save to slot {}", slot);
+        if (save_state_prepare) {
+            save_state_prepare(false);
+        }
         try {
             gpu->WaitIdle();
             System::SaveState(slot);
@@ -1051,9 +1057,14 @@ void System::serialize(Archive& ar, const unsigned int file_version) {
         LOG_INFO(Core, "Load: system rebuilt, restoring its state");
     }
 
-    // Flush on save, don't flush on load
-    const bool should_flush = !Archive::is_loading::value;
-    gpu->ClearAll(should_flush);
+    if (Archive::is_loading::value) {
+        // The rebuilt renderer starts out empty; there's nothing to flush.
+        gpu->ClearAll(false);
+    } else {
+        // What the GPU holds goes back to memory for the save, but stays cached: clearing it
+        // would make the frames after a save reload every texture, blank until they do.
+        gpu->FlushAll();
+    }
     ar&* timing.get();
     for (u32 i = 0; i < num_cores; i++) {
         ar&* cpu_cores[i].get();

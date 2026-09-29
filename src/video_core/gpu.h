@@ -66,6 +66,9 @@ public:
     /// Flushes and invalidates all memory in the rasterizer cache and removes any leftover state.
     void ClearAll(bool flush);
 
+    /// Writes everything the renderer holds back to guest memory but keeps it cached.
+    void FlushAll();
+
     /// Waits until all queued GPU work has completed.
     void WaitIdle();
 

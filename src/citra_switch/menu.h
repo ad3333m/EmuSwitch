@@ -34,6 +34,9 @@ void EndStartupScreen();
 // Queues a one-shot notice for the next RunMenu entry.
 void SetMenuNotice(const std::string& text, bool error = true);
 
+// The next time the menu draws, it fades in from black (after a game closes).
+void RequestMenuFadeIn();
+
 // Frees the font and shared-font resources cached across RunMenu calls.
 void ShutdownMenu();
 

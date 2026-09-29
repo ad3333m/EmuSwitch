@@ -232,6 +232,11 @@ void GPU::ClearAll(bool flush) {
     impl->rasterizer->ClearAll(flush);
 }
 
+void GPU::FlushAll() {
+    SyncGpuThread();
+    impl->rasterizer->FlushAll();
+}
+
 void GPU::WaitIdle() {
     SyncGpuThread();
 }

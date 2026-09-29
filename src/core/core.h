@@ -494,6 +494,12 @@ public:
         movie_playback_state_changed = func;
     }
 
+    /// Called on the emulation thread right before a save state is written (false) or loaded
+    /// (true), so the frontend can get the picture ready for the pause that follows.
+    void RegisterSaveStatePrepare(const std::function<void(bool loading)>& func) {
+        save_state_prepare = func;
+    }
+
     void SetDebugNextProcessFlag() {
         debug_next_process = true;
     }
@@ -644,6 +650,7 @@ private:
     bool mic_permission_granted = false;
 
     std::function<void(bool)> on_init_callback;
+    std::function<void(bool)> save_state_prepare;
 
     boost::optional<Service::APT::DeliverArg> restore_deliver_arg;
     boost::optional<Service::APT::SysMenuArg> restore_sys_menu_arg;

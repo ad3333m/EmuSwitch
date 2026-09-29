@@ -135,6 +135,7 @@ private:
     OverlayDraw PrepareToast(const Layout::FramebufferLayout& layout, Frame* frame);
 
     OverlayDraw PrepareQuickMenu(const Layout::FramebufferLayout& layout, Frame* frame);
+    OverlayDraw PrepareFade(const Layout::FramebufferLayout& layout, Frame* frame, float alpha);
 
     bool UploadOverlayVertices(Frame* frame, const std::vector<float>& verts, OverlayDraw& overlay);
 

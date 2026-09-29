@@ -46,10 +46,13 @@ struct OverlayTheme {
 void SetOverlayTheme(const OverlayTheme& theme);
 OverlayTheme GetOverlayTheme();
 
-// Covers the whole picture in black while set, so the last frames before the game closes are
-// black rather than a frozen picture.
-void SetOverlayBlackout(bool enabled);
-bool IsOverlayBlackout();
+// Covers the picture in black, from 0 (not at all) to 1 (all black), so the picture fades out
+// before the renderer is torn down (closing a game, loading a state) and back in afterwards
+// instead of cutting. FadeOverlayTo eases from wherever it is now to `alpha` over `ms`; the
+// renderer reads the value every frame.
+void SetOverlayFade(float alpha);
+void FadeOverlayTo(float alpha, u32 ms);
+float GetOverlayFade();
 
 // Clockwise rotation the renderer applies to everything it draws over the game.
 void SetOverlayRotation(u32 degrees);

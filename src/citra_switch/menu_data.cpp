@@ -353,6 +353,64 @@ bool IsCiaName(const std::string& name) {
     return ext == ".cia" || ext == ".zcia";
 }
 
+bool Is3dsFileName(const std::string& name) {
+    const std::size_t dot = name.rfind('.');
+    if (dot == std::string::npos) {
+        return false;
+    }
+    const std::string ext = Common::ToLower(name.substr(dot));
+    for (const char* known : {".3ds", ".cci", ".cxi", ".3dsx", ".z3ds", ".zcci", ".zcxi", ".z3dsx"}) {
+        if (ext == known) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The CIAs in `directory` and below, to be installed; nothing else there is read.
+void ScanCiaFolder(const std::string& directory, int depth) {
+    if (depth > 3 || !FileUtil::IsDirectory(directory)) {
+        return;
+    }
+    FileUtil::ForeachDirectoryEntry(
+        nullptr, directory, [depth](u64*, const std::string& dir, const std::string& name) {
+            const std::string path = dir + name;
+            if (FileUtil::IsDirectory(path)) {
+                ScanCiaFolder(path + '/', depth + 1);
+            } else if (IsCiaName(name) &&
+                       std::find(s_scan_cias.begin(), s_scan_cias.end(), path) == s_scan_cias.end()) {
+                s_scan_cias.push_back(path);
+            }
+            return true;
+        });
+}
+
+// Only the files directly in `directory` with a 3DS extension: games join the library, CIAs
+// get installed. Other systems' files there are theirs (multi_system.cpp).
+void ScanLoose3dsFiles(const std::string& directory, std::vector<GameEntry>& out) {
+    if (!FileUtil::IsDirectory(directory)) {
+        return;
+    }
+    FileUtil::ForeachDirectoryEntry(
+        nullptr, directory, [&out](u64*, const std::string& dir, const std::string& name) {
+            const std::string path = dir + name;
+            if (FileUtil::IsDirectory(path)) {
+                return true;
+            }
+            if (IsCiaName(name)) {
+                if (std::find(s_scan_cias.begin(), s_scan_cias.end(), path) == s_scan_cias.end()) {
+                    s_scan_cias.push_back(path);
+                }
+            } else if (Is3dsFileName(name)) {
+                GameEntry entry;
+                if (TryLoadCached(path, std::string{FileUtil::GetFilename(path)}, entry)) {
+                    out.push_back(std::move(entry));
+                }
+            }
+            return true;
+        });
+}
+
 void ScanDirectory(const std::string& directory, std::vector<GameEntry>& out, int depth,
                    bool recursive) {
     if (depth > 4) {
@@ -739,7 +797,9 @@ const char* InstallResultText(InstallResult result) {
     case InstallResult::Aborted:
         return "Install aborted";
     case InstallResult::Encrypted:
-        return "CIA is encrypted. Please decrypt it or add aes_keys.txt";
+        // The emulator only installs decrypted CIAs; keys don't change that.
+        return "it's an encrypted CIA. Decrypt it first (GodMode9 on a 3DS can), then copy it "
+               "again";
     default:
         return "Not a valid CIA";
     }
@@ -764,6 +824,12 @@ std::vector<GameEntry> ScanGames() {
     const std::string shared_3ds = "sdmc:/roms/3ds/";
     if (shared_3ds != paths.roms_dir && shared_3ds != paths.roms_dir_2 && FileUtil::IsDirectory(shared_3ds)) {
         ScanDirectory(shared_3ds, games, 0, true);
+    }
+    // 3DS files dropped straight into sdmc:/roms (the other systems' folders are theirs), and
+    // CIAs left in the folders people keep them in, which install like the rest.
+    ScanLoose3dsFiles("sdmc:/roms/", games);
+    for (const char* dir : {"sdmc:/cias/", "sdmc:/cia/", "sdmc:/roms/cia/"}) {
+        ScanCiaFolder(dir, 0);
     }
     SaveScanCache();
     Multi::AddGames(games);

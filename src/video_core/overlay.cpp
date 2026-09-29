@@ -2,6 +2,7 @@
 // Copyright(c) 2026: PalindromicBreadLoaf(palindromicbreadloaf@tuta.com)
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -24,7 +25,23 @@ std::chrono::steady_clock::time_point s_toast_until;
 
 std::mutex s_theme_mutex;
 OverlayTheme s_theme;
-std::atomic<bool> s_blackout{false};
+// The black cover's fade: from `fade_from` to `fade_to` over `fade_ms`, starting at `fade_start`.
+std::mutex s_fade_mutex;
+float s_fade_from = 0.0f;
+float s_fade_to = 0.0f;
+u32 s_fade_ms = 0;
+std::chrono::steady_clock::time_point s_fade_start{};
+
+float FadeAt(std::chrono::steady_clock::time_point now) {
+    if (s_fade_ms == 0) {
+        return s_fade_to;
+    }
+    const float elapsed =
+        std::chrono::duration<float, std::milli>(now - s_fade_start).count() / s_fade_ms;
+    const float t = std::clamp(elapsed, 0.0f, 1.0f);
+    const float eased = t * t * (3.0f - 2.0f * t);
+    return s_fade_from + (s_fade_to - s_fade_from) * eased;
+}
 } // namespace
 
 void SetOverlayTheme(const OverlayTheme& theme) {
@@ -37,12 +54,24 @@ OverlayTheme GetOverlayTheme() {
     return s_theme;
 }
 
-void SetOverlayBlackout(bool enabled) {
-    s_blackout.store(enabled, std::memory_order_release);
+void SetOverlayFade(float alpha) {
+    std::scoped_lock lock{s_fade_mutex};
+    s_fade_from = s_fade_to = std::clamp(alpha, 0.0f, 1.0f);
+    s_fade_ms = 0;
 }
 
-bool IsOverlayBlackout() {
-    return s_blackout.load(std::memory_order_acquire);
+void FadeOverlayTo(float alpha, u32 ms) {
+    std::scoped_lock lock{s_fade_mutex};
+    const auto now = std::chrono::steady_clock::now();
+    s_fade_from = FadeAt(now);
+    s_fade_to = std::clamp(alpha, 0.0f, 1.0f);
+    s_fade_start = now;
+    s_fade_ms = ms;
+}
+
+float GetOverlayFade() {
+    std::scoped_lock lock{s_fade_mutex};
+    return FadeAt(std::chrono::steady_clock::now());
 }
 
 void SetOverlayRotation(u32 degrees) {
