@@ -350,8 +350,10 @@ class Table {
 public:
     Table(std::vector<SettingEntry>& out, Category category) : out{out}, category{category} {}
 
-    void Group(const char* name) {
+    // An expert group's entries are only listed while Show All Settings is on.
+    void Group(const char* name, bool expert = false) {
         subgroup = name;
+        expert_group = expert;
     }
 
     void Ini(const char* name) {
@@ -366,6 +368,9 @@ public:
         if (entry.IsPersisted()) {
             entry.group = section;
         }
+        if (expert_group) {
+            entry.flags |= EntryFlag::Expert;
+        }
         out.push_back(std::move(entry));
         return *this;
     }
@@ -375,7 +380,14 @@ private:
     Category category;
     const char* subgroup = "";
     const char* section = "Miscellaneous";
+    bool expert_group = false;
 };
+
+// One technical entry in a group that is otherwise listed.
+SettingEntry Expert(SettingEntry entry) {
+    entry.flags |= EntryFlag::Expert;
+    return entry;
+}
 
 SettingEntry Relayout(SettingEntry entry) {
     entry.flags |= EntryFlag::Relayout;
@@ -547,7 +559,7 @@ SettingEntry LargeScreenProportionEntry() {
 
 SettingEntry CpuClockEntry() {
     auto& setting = Settings::values.cpu_clock_percentage;
-    SettingEntry entry = Base({"CPU Clock",
+    SettingEntry entry = Base({"3DS CPU Clock",
                                "Emulated ARM11 speed. Under 100% can help slow games, over it "
                                "breaks timing-sensitive ones.",
                                EntryFlag::None, QuickSection::System});
@@ -776,16 +788,22 @@ void BuildGeneral(std::vector<SettingEntry>& out) {
     t << FrameLimitEntry();
     t.Ini("Core");
     t << CpuClockEntry();
+    t << LocalBool(
+        "game_cpu_boost",
+        {"Faster Switch CPU",
+         "Runs the Switch's CPU at 1785 MHz while a game plays, the speed the system uses "
+         "for loading screens. Smoother games, a little more battery."},
+        IsGameCpuBoostEnabled, SetGameCpuBoostEnabled, true);
 
     t.Group("On-Screen");
     t.Ini("Renderer");
     t << Toggle({"Show FPS Counter", "Draws a framerate counter over the game.", EntryFlag::None,
                  QuickSection::Display},
                 Settings::values.show_fps);
-    t << Toggle({"Shader Compile Notice",
-                 "Note on screen while shaders are being compiled (uses some performance).", EntryFlag::None,
-                 QuickSection::Display},
-                Settings::values.show_shader_compile_notice);
+    t << Expert(Toggle({"Shader Compile Notice",
+                        "Note on screen while shaders are being compiled (uses some performance).",
+                        EntryFlag::None, QuickSection::Display},
+                       Settings::values.show_shader_compile_notice));
 
     t.Group("Quick Menu");
     t.Ini("Switch");
@@ -795,19 +813,18 @@ void BuildGeneral(std::vector<SettingEntry>& out) {
                    IsPauseInQuickMenu, SetPauseInQuickMenu, false);
 
     t.Group("Updates");
-    t << LocalChoice(
-        "update_channel",
-        {"Update Channel", "Which GitHub releases the updater offers you."},
-        [] { return static_cast<int>(GetUpdateChannel()); },
-        [](int value) { SetUpdateChannel(static_cast<UpdateChannel>(value)); }, 0,
-        kUpdateChannelNames);
-    t << LocalBool("show_whats_new",
-                   {"Show What's New", "Shows the release notes card after an update."},
-                   IsWhatsNewCardEnabled, SetWhatsNewCardEnabled, true);
     t << Modal({"Check for Updates", "Asks GitHub whether a newer build is available."},
                SettingsModal::CheckForUpdates, [] { return std::string{CurrentVersion()}; });
     t << Modal({"Release Notes", "Shows what changed in the build you are running."},
                SettingsModal::ReleaseNotes, [] { return std::string{CurrentVersion()}; });
+    t << Expert(LocalChoice(
+        "update_channel", {"Update Channel", "Which GitHub releases the updater offers you."},
+        [] { return static_cast<int>(GetUpdateChannel()); },
+        [](int value) { SetUpdateChannel(static_cast<UpdateChannel>(value)); }, 0,
+        kUpdateChannelNames));
+    t << Expert(LocalBool("show_whats_new",
+                          {"Show What's New", "Shows the release notes card after an update."},
+                          IsWhatsNewCardEnabled, SetWhatsNewCardEnabled, true));
 
     t.Group("Maintenance");
     t << Modal({"Reset All Settings",
@@ -815,88 +832,11 @@ void BuildGeneral(std::vector<SettingEntry>& out) {
                SettingsModal::ResetDefaults, [] { return std::string{"Choose"}; });
 }
 
+// Everything about the picture: what used to be the Graphics, Enhancements and 3D pages. The
+// groups people change most come first.
 void BuildGraphics(std::vector<SettingEntry>& out) {
     auto& v = Settings::values;
     Table t{out, Category::Graphics};
-    t.Ini("Renderer");
-
-    t.Group("Backend");
-    t << GraphicsApiEntry();
-    t << Toggle({"SPIR-V Shader Generation",
-                 "Emits SPIR-V directly instead of going through GLSL.", EntryFlag::Restart},
-                v.spirv_shader_gen);
-    t << Toggle({"Disable SPIR-V Optimizer",
-                 "Skips the SPIR-V optimiser. Compiles faster, runs (slightly) slower.", EntryFlag::Restart},
-                v.disable_spirv_optimizer);
-
-    t.Group("Shaders");
-    t << Toggle({"Hardware Shader",
-                 "Runs PICA vertex shaders on the GPU. Turning this off is much slower.",
-                 EntryFlag::None, QuickSection::Graphics},
-                v.use_hw_shader);
-    t << Toggle({"Accurate Shader Multiplication",
-                 "Matches the PICA's multiply edge cases. Fixes geometry bugs, costs speed."},
-                v.shaders_accurate_mul);
-    t << Toggle({"Shader JIT",
-                 "Compiles CPU-side PICA shaders to native code instead of interpreting them."},
-                v.use_shader_jit);
-    t << Toggle({"Async Shader Compilation",
-                 "Builds shaders on a background thread. Cuts hitching at the cost of one-time visual bugs."},
-                v.async_shader_compilation);
-    t << Toggle({"Disk Shader Cache",
-                 "Keeps compiled shaders on the SD card so later runs hitch less."},
-                v.use_disk_shader_cache);
-    t << ClearShaderCacheEntry();
-
-    t.Group("Threading");
-    t << Toggle({"Async GPU", "Runs PICA and renderer work on their own host thread.",
-                 EntryFlag::Restart},
-                v.async_gpu_emulation);
-    t << Toggle({"Strict GPU Sync", "Drains the GPU queue after every trigger. For debugging."},
-                v.strict_gpu_sync);
-    t << Toggle({"Async Presentation", "Hands finished frames to the display from another thread."},
-                v.async_presentation);
-
-    t.Group("Presentation");
-    t << Toggle({"VSync", "Waits for the display before presenting, which removes tearing."},
-                v.use_vsync);
-    t << Toggle({"Detect Display Refresh Rate",
-                 "Reads the panel's real refresh rate instead of assuming 60 Hz."},
-                v.use_display_refresh_rate_detection);
-    t << Toggle({"Skip Duplicate Frames", "Skips presenting a frame the game did not redraw."},
-                v.use_skip_duplicate_frames);
-
-#ifdef ENABLE_LSFG
-    t.Group("Frame Generation");
-    t << FrameGenerationEntry();
-    t << LosslessDllEntry();
-    t << Number({"Frame Gen Max Multiplier",
-                 "Ceiling on frames presented per rendered frame.", EntryFlag::None,
-                 QuickSection::Graphics},
-                v.frame_generation_multiplier, 2, 4, 1, "x");
-    t << Toggle({"Frame Gen Above 60 Hz",
-                 "Lets frame generation exceed 60 fps. Only useful on an overclocked display."},
-                v.frame_generation_high_refresh);
-    t << Toggle({"Frame Gen Performance Mode",
-                 "Trades interpolation quality for a cheaper chain."},
-                v.frame_generation_performance_mode);
-    t << Number({"Frame Gen Flow Scale",
-                 "Optical-flow resolution. Cost grows with the square of this."},
-                v.frame_generation_flow_scale, 12, 100, 1, "%");
-#endif
-
-    t.Group("Accuracy");
-    t << Toggle({"Simulate 3DS GPU Timings",
-                 "Makes draws take as long as they would on hardware. Fixes some timing bugs."},
-                v.simulate_3ds_gpu_timings);
-    t << Number({"Render Thread Delay",
-                 "Holds the game's render thread back, for games that outrun their own GPU."},
-                v.delay_game_render_thread_us, 0, 10000, 100, " us");
-}
-
-void BuildEnhancements(std::vector<SettingEntry>& out) {
-    auto& v = Settings::values;
-    Table t{out, Category::Enhancements};
     t.Ini("Renderer");
 
     t.Group("Resolution");
@@ -913,45 +853,55 @@ void BuildEnhancements(std::vector<SettingEntry>& out) {
     t << Choice({"Texture Filter", "Upscales game textures. Anything but None costs GPU time.",
                  EntryFlag::None, QuickSection::Graphics},
                 v.texture_filter, kTextureFilterNames);
-    t << Choice({"Texture Sampling", "Overrides how the game asked its textures to be sampled.",
-                 EntryFlag::None, QuickSection::Graphics},
-                v.texture_sampling, kTextureSamplingNames);
+    t << Expert(
+        Choice({"Texture Sampling", "Overrides how the game asked its textures to be sampled.",
+                EntryFlag::None, QuickSection::Graphics},
+               v.texture_sampling, kTextureSamplingNames));
     t << Choice({"Anisotropic Filtering", "Sharpens textures viewed at a steep angle.",
                  EntryFlag::None, QuickSection::Graphics},
                 v.anisotropic_filtering, kAnisotropyNames);
 
-    t.Group("Custom Textures");
-    t.Ini("Utility");
-    t << Toggle({"Custom Textures", "Loads a texture pack from load/textures/<title id>/.",
-                 EntryFlag::None, QuickSection::Graphics},
-                v.custom_textures);
-    t << Toggle({"Preload Custom Textures",
-                 "Loads the whole pack at boot. Costs memory, avoids in-game hitches."},
-                v.preload_textures);
-    t << Toggle({"Async Custom Texture Loading", "Decodes pack textures on background threads."},
-                v.async_custom_loading);
-    t << Toggle({"Dump Textures", "Writes the game's textures out so a pack can be built.",
-                 EntryFlag::Restart},
-                v.dump_textures);
-}
+    t.Group("Presentation");
+    t << Toggle({"VSync", "Waits for the display before presenting, which removes tearing."},
+                v.use_vsync);
+    t << Expert(Toggle({"Detect Display Refresh Rate",
+                        "Reads the panel's real refresh rate instead of assuming 60 Hz."},
+                       v.use_display_refresh_rate_detection));
+    t << Expert(
+        Toggle({"Skip Duplicate Frames", "Skips presenting a frame the game did not redraw."},
+               v.use_skip_duplicate_frames));
 
-void BuildStereo3D(std::vector<SettingEntry>& out) {
-    auto& v = Settings::values;
-    Table t{out, Category::Stereo3D};
+#ifdef ENABLE_LSFG
+    t.Group("Frame Generation");
+    t << FrameGenerationEntry();
+    t << LosslessDllEntry();
+    t << Number({"Frame Gen Max Multiplier", "Ceiling on frames presented per rendered frame.",
+                 EntryFlag::None, QuickSection::Graphics},
+                v.frame_generation_multiplier, 2, 4, 1, "x");
+    t << Expert(Toggle({"Frame Gen Above 60 Hz",
+                        "Lets frame generation exceed 60 fps. Only useful on an overclocked "
+                        "display."},
+                       v.frame_generation_high_refresh));
+    t << Expert(
+        Toggle({"Frame Gen Performance Mode", "Trades interpolation quality for a cheaper chain."},
+               v.frame_generation_performance_mode));
+    t << Expert(Number(
+        {"Frame Gen Flow Scale", "Optical-flow resolution. Cost grows with the square of this."},
+        v.frame_generation_flow_scale, 12, 100, 1, "%"));
+#endif
 
     t.Group("Stereoscopic 3D");
-    t.Ini("Renderer");
     t << StereoModeEntry();
     t << StereoDepthEntry();
-    t << Toggle({"Swap Eyes", "Sends each eye's image to the other eye.", EntryFlag::None,
-                 QuickSection::Stereo},
-                v.swap_eyes_3d);
-    t << Choice({"Eye Rendered In 2D", "Which eye is shown when 3D is off.", EntryFlag::None,
-                 QuickSection::Stereo},
-                v.mono_render_option, kMonoEyeNames);
+    t << Expert(Toggle({"Swap Eyes", "Sends each eye's image to the other eye.", EntryFlag::None,
+                        QuickSection::Stereo},
+                       v.swap_eyes_3d));
+    t << Expert(Choice({"Eye Rendered In 2D", "Which eye is shown when 3D is off.", EntryFlag::None,
+                        QuickSection::Stereo},
+                       v.mono_render_option, kMonoEyeNames));
     t << DisableRightEyeEntry();
 
-    t.Group("Nintendo Labo VR");
+    t.Group("Nintendo Labo VR", true);
     t.Ini("Layout");
     t << Relayout(Number({"Labo VR Image Size", "Size of each eye's image in the headset.",
                           EntryFlag::None, QuickSection::Stereo},
@@ -965,6 +915,70 @@ void BuildStereo3D(std::vector<SettingEntry>& out) {
                           "Shifts both eyes up or down to line up with the lenses.",
                           EntryFlag::None, QuickSection::Stereo},
                          v.cardboard_y_shift, -100, 100, 5, "%"));
+
+    t.Group("Custom Textures");
+    t.Ini("Utility");
+    t << Toggle({"Custom Textures", "Loads a texture pack from load/textures/<title id>/.",
+                 EntryFlag::None, QuickSection::Graphics},
+                v.custom_textures);
+    t << Expert(Toggle({"Preload Custom Textures",
+                        "Loads the whole pack at boot. Costs memory, avoids in-game hitches."},
+                       v.preload_textures));
+    t << Expert(
+        Toggle({"Async Custom Texture Loading", "Decodes pack textures on background threads."},
+               v.async_custom_loading));
+    t << Expert(Toggle({"Dump Textures", "Writes the game's textures out so a pack can be built.",
+                        EntryFlag::Restart},
+                       v.dump_textures));
+
+    t.Group("Shaders");
+    t.Ini("Renderer");
+    t << Expert(Toggle({"Hardware Shader",
+                        "Runs PICA vertex shaders on the GPU. Turning this off is much slower.",
+                        EntryFlag::None, QuickSection::Graphics},
+                       v.use_hw_shader));
+    t << Expert(
+        Toggle({"Accurate Shader Multiplication",
+                "Matches the PICA's multiply edge cases. Fixes geometry bugs, costs speed."},
+               v.shaders_accurate_mul));
+    t << Expert(Toggle({"Shader JIT",
+                        "Compiles CPU-side PICA shaders to native code instead of interpreting "
+                        "them."},
+                       v.use_shader_jit));
+    t << Toggle({"Async Shader Compilation", "Builds shaders on a background thread. Cuts hitching "
+                                             "at the cost of one-time visual bugs."},
+                v.async_shader_compilation);
+    t << Expert(Toggle(
+        {"Disk Shader Cache", "Keeps compiled shaders on the SD card so later runs hitch less."},
+        v.use_disk_shader_cache));
+    t << ClearShaderCacheEntry();
+
+    t.Group("Backend", true);
+    t << GraphicsApiEntry();
+    t << Toggle({"SPIR-V Shader Generation", "Emits SPIR-V directly instead of going through GLSL.",
+                 EntryFlag::Restart},
+                v.spirv_shader_gen);
+    t << Toggle({"Disable SPIR-V Optimizer",
+                 "Skips the SPIR-V optimiser. Compiles faster, runs (slightly) slower.",
+                 EntryFlag::Restart},
+                v.disable_spirv_optimizer);
+
+    t.Group("Threading", true);
+    t << Toggle(
+        {"Async GPU", "Runs PICA and renderer work on their own host thread.", EntryFlag::Restart},
+        v.async_gpu_emulation);
+    t << Toggle({"Strict GPU Sync", "Drains the GPU queue after every trigger. For debugging."},
+                v.strict_gpu_sync);
+    t << Toggle({"Async Presentation", "Hands finished frames to the display from another thread."},
+                v.async_presentation);
+
+    t.Group("Accuracy", true);
+    t << Toggle({"Simulate 3DS GPU Timings",
+                 "Makes draws take as long as they would on hardware. Fixes some timing bugs."},
+                v.simulate_3ds_gpu_timings);
+    t << Number({"Render Thread Delay",
+                 "Holds the game's render thread back, for games that outrun their own GPU."},
+                v.delay_game_render_thread_us, 0, 10000, 100, " us");
 }
 
 void BuildAudio(std::vector<SettingEntry>& out) {
@@ -973,19 +987,20 @@ void BuildAudio(std::vector<SettingEntry>& out) {
     t.Ini("Audio");
 
     t.Group("Output");
-    t << Choice({"Audio Emulation", "HLE is fast, LLE runs the real DSP firmware and is accurate.",
-                 EntryFlag::Restart},
-                v.audio_emulation, kAudioEmulationNames);
+    t << Expert(
+        Choice({"Audio Emulation", "HLE is fast, LLE runs the real DSP firmware and is accurate.",
+                EntryFlag::Restart},
+               v.audio_emulation, kAudioEmulationNames));
     t << Percent({"Volume", "Output volume.", EntryFlag::None, QuickSection::Audio}, v.volume, 0,
                  100, 5);
-    t << Toggle({"Simulate Headphones", "Tells the game headphones are plugged in.",
-                 EntryFlag::None, QuickSection::Audio},
-                v.simulate_headphones_plugged);
+    t << Expert(Toggle({"Simulate Headphones", "Tells the game headphones are plugged in.",
+                        EntryFlag::None, QuickSection::Audio},
+                       v.simulate_headphones_plugged));
 
     t.Group("Timing");
     t << AudioStretchingEntry();
-    t << Toggle({"Realtime Audio", "Runs the audio mixer at a higher thread priority."},
-                v.enable_realtime_audio);
+    t << Expert(Toggle({"Realtime Audio", "Runs the audio mixer at a higher thread priority."},
+                       v.enable_realtime_audio));
 }
 
 void BuildLayout(std::vector<SettingEntry>& out) {
@@ -1019,7 +1034,8 @@ void BuildLayout(std::vector<SettingEntry>& out) {
                    {"DS Screen Gap", "Space between a DS game's screens when they're stacked."},
                    GetDsScreenGap, SetDsScreenGap, 0, DsScreenGapCount(), DsScreenGapName);
 
-    t.Group("Screen Overlay");
+    // Also in the in-game quick menu's Display section, where the effect shows straight away.
+    t.Group("Screen Overlay", true);
     t.Ini("Layout");
     t << Relayout(Choice({"Overlay Screen Position",
                           "Where the small screen sits inside the big one.", EntryFlag::None,
@@ -1032,7 +1048,7 @@ void BuildLayout(std::vector<SettingEntry>& out) {
                           EntryFlag::None, QuickSection::Display},
                          v.overlay_screen_opacity, 10, 100, 10, "%"));
 
-    t.Group("Padding");
+    t.Group("Padding", true);
     t << Relayout(Number({"Top Screen Padding X", "Blank space beside the top screen."},
                          v.screen_top_leftright_padding, 0, 200, 4, " px"));
     t << Relayout(Number({"Top Screen Padding Y", "Blank space above and below the top screen."},
@@ -1043,7 +1059,7 @@ void BuildLayout(std::vector<SettingEntry>& out) {
                           "Blank space above and below the bottom screen."},
                          v.screen_bottom_topbottom_padding, 0, 200, 4, " px"));
 
-    t.Group("Background");
+    t.Group("Background", true);
     t << ColorChannel({"Background Red", "Red channel of the colour behind the screens."},
                       v.bg_red);
     t << ColorChannel({"Background Green", "Green channel of the colour behind the screens."},
@@ -1118,6 +1134,7 @@ void BuildControls(std::vector<SettingEntry>& out) {
     t << GyroSensitivityEntry(false);
 }
 
+// The emulated console: what used to be the System, Console and Storage pages.
 void BuildSystem(std::vector<SettingEntry>& out) {
     auto& v = Settings::values;
     Table t{out, Category::System};
@@ -1132,8 +1149,8 @@ void BuildSystem(std::vector<SettingEntry>& out) {
                      "false");
     t.Ini("System");
     t << RegionEntry();
-    t << Toggle({"Region Free Patch", "Patches out the region check so imports will boot."},
-                v.apply_region_free_patch);
+    t << Expert(Toggle({"Region Free Patch", "Patches out the region check so imports will boot."},
+                       v.apply_region_free_patch));
 
     t.Group("Profile");
     t << Modal({"Username", "Name the emulated console answers to."}, SettingsModal::Username,
@@ -1141,8 +1158,8 @@ void BuildSystem(std::vector<SettingEntry>& out) {
                    const std::string name = GetProfileUsername();
                    return name.empty() ? std::string{"Not set"} : name;
                });
-    t << BirthMonthEntry();
-    t << BirthDayEntry();
+    t << Expert(BirthMonthEntry());
+    t << Expert(BirthDayEntry());
     t << ProfileChoice({"System Language", "Language games ask the console for."},
                        ProfileValue::Language, kLanguageNames);
     t << Modal({"Country", "Country the console reports. Games check this against the region."},
@@ -1151,23 +1168,24 @@ void BuildSystem(std::vector<SettingEntry>& out) {
                    return IsCountryValidForRegion(GetProfileCountry()) ? name
                                                                       : name + " (wrong region)";
                });
-    t << ProfileChoice({"Sound Output", "Speaker arrangement the console reports."},
-                       ProfileValue::SoundMode, kSoundOutputNames);
+    t << Expert(ProfileChoice({"Sound Output", "Speaker arrangement the console reports."},
+                              ProfileValue::SoundMode, kSoundOutputNames));
     t << PlayCoinsEntry();
-    t << SystemSetupEntry();
+    t << Expert(SystemSetupEntry());
 
     t.Group("Clock");
-    t << Choice({"Clock Source", "Where the emulated clock starts from."}, v.init_clock,
-                kInitClockNames);
-    t << PersistedModal({"Fixed Clock Time", "The date and time a fixed clock starts at."},
-                        SettingsModal::FixedClock, v.init_time, GetFixedClockText);
+    t << Expert(Choice({"Clock Source", "Where the emulated clock starts from."}, v.init_clock,
+                       kInitClockNames));
+    t << Expert(PersistedModal({"Fixed Clock Time", "The date and time a fixed clock starts at."},
+                               SettingsModal::FixedClock, v.init_time, GetFixedClockText));
     t << ClockOffsetEntry();
-    t << Choice({"Initial Ticks", "What the CPU tick counter starts at."}, v.init_ticks_type,
-                kInitTicksNames);
-    t << PersistedModal({"Initial Ticks Value", "The tick count a fixed start uses."},
-                        SettingsModal::InitTicksValue, v.init_ticks_override, GetInitTicksText);
+    t << Expert(Choice({"Initial Ticks", "What the CPU tick counter starts at."}, v.init_ticks_type,
+                       kInitTicksNames));
+    t << Expert(PersistedModal({"Initial Ticks Value", "The tick count a fixed start uses."},
+                               SettingsModal::InitTicksValue, v.init_ticks_override,
+                               GetInitTicksText));
 
-    t.Group("Modules");
+    t.Group("Modules", true);
     t << Toggle({"LLE Applets", "Runs the console's own applets instead of the built-in ones.",
                  EntryFlag::Restart},
                 v.lle_applets);
@@ -1175,32 +1193,28 @@ void BuildSystem(std::vector<SettingEntry>& out) {
                  "Loads the real sysmodules some online games insist on.", EntryFlag::Restart},
                 v.enable_required_online_lle_modules);
 
-    t.Group("Plugins");
+    t.Group("Plugins", true);
     t << Toggle({"Plugin Loader", "Loads 3GX plugins for the running game.", EntryFlag::Restart},
                 v.plugin_loader_enabled);
     t << Toggle({"Allow Games To Change Plugin Loader",
                  "Lets the game turn the plugin loader on and off itself."},
                 v.allow_plugin_loader);
 
-    t.Group("Pedometer");
+    t.Group("Pedometer", true);
     t << Number({"Pedometer Steps Per Hour", "Steps the console pretends you walked each hour."},
                 v.steps_per_hour, 0, 10000, 100);
-}
 
-void BuildConsole(std::vector<SettingEntry>& out) {
-    Table t{out, Category::Console};
+    t.Group("Console Identity", true);
     t.Ini("Debugging");
-
-    t.Group("Identity");
     t << Modal({"Console ID", "The unique ID this console reports. Regenerating changes it."},
                SettingsModal::ConsoleId, GetConsoleIdText);
     t << Modal({"MAC Address", "The network address this console reports."},
                SettingsModal::MacAddress, GetMacAddressText);
-    t << Toggle({"Unique Data Console Type",
-                 "Reads the console model out of the installed unique data."},
-                Settings::values.toggle_unique_data_console_type);
+    t << Toggle(
+        {"Unique Data Console Type", "Reads the console model out of the installed unique data."},
+        v.toggle_unique_data_console_type);
 
-    t.Group("Unique Data");
+    t.Group("Unique Data", true);
     t << UniqueDataEntry(UniqueDataFile::SecureInfo, "Region and serial dumped from a real 3DS.");
     t << UniqueDataEntry(UniqueDataFile::FriendCodeSeed, "Friend code seed dumped from a real 3DS.");
     t << UniqueDataEntry(UniqueDataFile::Otp, "One-time programmable block dumped from a real 3DS.");
@@ -1208,21 +1222,16 @@ void BuildConsole(std::vector<SettingEntry>& out) {
     t << Modal({"Unlink Console", "Removes the dumped files and stops impersonating that console."},
                SettingsModal::UnlinkConsole,
                [] { return std::string{IsConsoleLinked() ? "Linked" : "Not linked"}; });
-}
 
-void BuildStorage(std::vector<SettingEntry>& out) {
-    auto& v = Settings::values;
-    Table t{out, Category::Storage};
+    t.Group("SD Card", true);
     t.Ini("Data Storage");
-
-    t.Group("SD Card");
     t << Toggle({"Virtual SD Card", "Gives the emulated console an SD card at all."},
                 v.use_virtual_sd);
     t << Toggle({"Async Filesystem Operations",
                  "Runs guest file reads and writes off the emulated CPU thread."},
                 v.async_fs_operations);
 
-    t.Group("Installs");
+    t.Group("Installs", true);
     t << Toggle({"Compress CIA Installs", "Shrinks installed titles on disk at some CPU cost."},
                 v.compress_cia_installs);
 }
@@ -1231,13 +1240,16 @@ void BuildAdvanced(std::vector<SettingEntry>& out) {
     auto& v = Settings::values;
     Table t{out, Category::Advanced};
 
-    t.Group("CPU");
+    t.Group("Settings Menu");
+    t.Ini("Switch");
+    t << LocalBool(
+        "show_all_settings",
+        {"Show All Settings",
+         "Also lists the technical settings on every page. X does the same on any page."},
+        IsShowAllSettingsEnabled, SetShowAllSettingsEnabled, false);
+
+    t.Group("CPU", true);
     t.Ini("Core");
-    t << LocalBool("game_cpu_boost",
-                   {"Faster Switch CPU",
-                    "Runs the Switch's CPU at 1785 MHz while a game plays, the speed the system uses "
-                    "for loading screens. Smoother games, a little more battery."},
-                   IsGameCpuBoostEnabled, SetGameCpuBoostEnabled, true);
     t << Toggle({"CPU JIT", "Compiles guest ARM11 code. Turning this off is far slower.",
                  EntryFlag::Restart},
                 v.use_cpu_jit);
@@ -1245,7 +1257,7 @@ void BuildAdvanced(std::vector<SettingEntry>& out) {
                  EntryFlag::Restart},
                 v.fastmem);
 
-    t.Group("Speed Hacks");
+    t.Group("Speed Hacks", true);
     t.Ini("Experimental");
     t << LocalBool("movie_cpu_throttle",
                    {"Movie CPU Throttle", "Drops the emulated clock while a cutscene is playing."},
@@ -1263,7 +1275,7 @@ void BuildAdvanced(std::vector<SettingEntry>& out) {
     t << Toggle({"Skip CPU Write", "Keeps cached GPU surfaces through tiny CPU writes."},
                 v.skip_cpu_write);
 
-    t.Group("Debug");
+    t.Group("Debug", true);
     t.Ini("Debugging");
     t << Toggle({"Deterministic Async Operations",
                  "Makes background work finish in a fixed order, for reproducing bugs."},
@@ -1279,7 +1291,7 @@ void BuildAdvanced(std::vector<SettingEntry>& out) {
     t << Toggle({"Dump Command Buffers", "Writes the GPU command stream out to disk."},
                 v.dump_command_buffers);
 
-    t.Group("Logging");
+    t.Group("Logging", true);
     t << Toggle({"Instant Debug Log", "Flushes every log line immediately. Very slow."},
                 v.instant_debug_log);
     t.Ini("Miscellaneous");
@@ -1312,14 +1324,10 @@ std::vector<SettingEntry> BuildRegistry() {
     BuildGeneral(entries);
     BuildThemes(entries);
     BuildGraphics(entries);
-    BuildEnhancements(entries);
-    BuildStereo3D(entries);
     BuildAudio(entries);
     BuildLayout(entries);
     BuildControls(entries);
     BuildSystem(entries);
-    BuildConsole(entries);
-    BuildStorage(entries);
     BuildAdvanced(entries);
     return entries;
 }
@@ -1343,10 +1351,6 @@ const char* CategoryName(Category category) {
         return "Themes";
     case Category::Graphics:
         return "Graphics";
-    case Category::Enhancements:
-        return "Enhancements";
-    case Category::Stereo3D:
-        return "3D";
     case Category::Audio:
         return "Audio";
     case Category::Layout:
@@ -1355,10 +1359,6 @@ const char* CategoryName(Category category) {
         return "Controls";
     case Category::System:
         return "System";
-    case Category::Console:
-        return "Console";
-    case Category::Storage:
-        return "Storage";
     case Category::Advanced:
         return "Advanced";
     default:
@@ -1398,6 +1398,31 @@ std::vector<const SettingEntry*> EntriesIn(Category category) {
         }
     }
     return out;
+}
+
+std::vector<const SettingEntry*> ShownEntriesIn(Category category) {
+    const bool show_all = IsShowAllSettingsEnabled();
+    std::vector<const SettingEntry*> out;
+    for (const SettingEntry* entry : EntriesIn(category)) {
+        if (show_all || (entry->flags & EntryFlag::Expert) == 0) {
+            out.push_back(entry);
+        }
+    }
+    return out;
+}
+
+int ExpertEntryCount(Category category) {
+    int count = 0;
+    for (const SettingEntry& entry : Registry()) {
+        if (entry.category == category && (entry.flags & EntryFlag::Expert) != 0) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int HiddenEntryCount(Category category) {
+    return IsShowAllSettingsEnabled() ? 0 : ExpertEntryCount(category);
 }
 
 std::vector<const SettingEntry*> EntriesInQuick(QuickSection section) {

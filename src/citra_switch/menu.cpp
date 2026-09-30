@@ -1388,6 +1388,47 @@ private:
         SetSettingsPage(settings_page);
     }
 
+    // Lists the page again after Show All Settings flipped. The row under the cursor keeps its
+    // place on screen if it is still listed, otherwise the nearest listed row above it does.
+    void RelistSettingsPage() {
+        const std::vector<SettingsRow> before = std::move(settings_rows);
+        const int old_sel =
+            std::clamp(SettingsSel(), 0, std::max(0, static_cast<int>(before.size()) - 1));
+        const int old_offset = old_sel - SettingsScroll();
+        settings_rows = BuildCategoryRows(settings_page);
+        // The other pages' cursors point into lists that just changed, so they start at the top.
+        for (int i = 0; i < NumCategories; ++i) {
+            if (i != static_cast<int>(settings_page)) {
+                settings_sel[i] = 0;
+                settings_scroll[i] = 0;
+            }
+        }
+        int sel = 0;
+        for (int i = old_sel; i >= 0 && i < static_cast<int>(before.size()); --i) {
+            const auto it = std::find_if(
+                settings_rows.begin(), settings_rows.end(), [&](const SettingsRow& row) {
+                    return !row.is_header && !before[i].is_header && row.label == before[i].label;
+                });
+            if (it != settings_rows.end()) {
+                sel = static_cast<int>(it - settings_rows.begin());
+                break;
+            }
+        }
+        SettingsSel() = SettleSettingsSelection(sel, +1);
+        const int count = static_cast<int>(settings_rows.size());
+        SettingsScroll() =
+            std::clamp(SettingsSel() - old_offset, 0, std::max(0, count - SettingsVisibleRows()));
+        ScrollSettingsIntoView();
+    }
+
+    void ToggleShowAllSettings() {
+        const bool on = !IsShowAllSettingsEnabled();
+        SetShowAllSettingsEnabled(on);
+        settings_dirty = true;
+        RelistSettingsPage();
+        ShowNotice(on ? "Showing every setting" : "Showing the main settings", false);
+    }
+
     int& SettingsSel() {
         if (settings_search_open) {
             return settings_search_sel;
@@ -2144,6 +2185,11 @@ private:
             HandleThemes(down, nav);
             return false;
         }
+        if ((down & HidNpadButton_X) && !PerGameOpen() && !settings_search_open &&
+            ExpertEntryCount(settings_page) > 0) {
+            ToggleShowAllSettings();
+            return false;
+        }
         if (settings_rows.empty()) {
             if (down & HidNpadButton_B) {
                 if (PerGameOpen()) {
@@ -2206,6 +2252,7 @@ private:
         };
 
         // Settings::values is edited live. FlushSettings() only batches the config.ini write.
+        const bool show_all = IsShowAllSettingsEnabled();
         if (dpad_nav & DirLeft) {
             edit(-1);
         }
@@ -2214,6 +2261,11 @@ private:
         }
         if (down & HidNpadButton_A) {
             edit(row.boolean && row.boolean() ? -1 : +1);
+        }
+        if (IsShowAllSettingsEnabled() != show_all && !settings_search_open && !PerGameOpen()) {
+            // `row` belongs to the list this replaces.
+            RelistSettingsPage();
+            return false;
         }
         if (down & HidNpadButton_B) {
             back();
@@ -2275,6 +2327,7 @@ private:
                 // ResetSettings() has already written the new values out.
                 settings_dirty = false;
                 preset_picker_open = false;
+                SetSettingsPage(settings_page);
                 ShowNotice("Settings reset to " + std::string{SettingsPresetName(preset)}, false);
             }};
     }
@@ -2502,15 +2555,14 @@ private:
     void OpenUpdateConfirm(const UpdateRelease& release) {
         update_release = release;
         const std::string kind = release.prerelease ? "prerelease" : "stable release";
-        confirm = ConfirmPrompt{
-            "Update EmuSwitch to " + release.tag + '?',
-            {"Installed: " + std::string{CurrentVersion()},
-             "Available: " + release.tag + " (" + kind + ")",
-             "The running dekopon.nro will be replaced after verification."},
-            "The current NRO is retained as a .backup file.",
-            "Update",
-            [this, release] { StartUpdate(release); },
-            [tag = release.tag] { DismissUpdateTag(tag); }};
+        confirm = ConfirmPrompt{"Update EmuSwitch to " + release.tag + '?',
+                                {"Installed: " + std::string{CurrentVersion()},
+                                 "Available: " + release.tag + " (" + kind + ")",
+                                 "It's checked, then installed when EmuSwitch restarts."},
+                                "The current NRO is kept as a .backup file.",
+                                "Update",
+                                [this, release] { StartUpdate(release); },
+                                [tag = release.tag] { DismissUpdateTag(tag); }};
     }
 
     void StartUpdate(const UpdateRelease& release) {
@@ -3668,13 +3720,13 @@ private:
         const int x = (g_screen_w - w) / 2;
         const int y = (g_screen_h - h) / 2;
         Skin::DrawModal(c, x, y, w, h);
-        g_font.Draw(c, x + 24, y + 46, "Update installed", 24, kColText);
+        g_font.Draw(c, x + 24, y + 46, "Update downloaded", 24, kColText);
         g_font.Draw(c, x + 24, y + 84, "EmuSwitch " + update_release.tag + " is ready.", 19,
                     kColAccent);
         g_font.Draw(c, x + 24, y + 116,
-                    "The previous NRO remains beside it with a .backup suffix.", 17,
+                    "EmuSwitch will close, install it and reopen on the new version.", 17,
                     kColTextDim);
-        g_font.Draw(c, x + 24, y + 144, "EmuSwitch will close and reopen on the new version.", 17,
+        g_font.Draw(c, x + 24, y + 144, "The previous NRO stays beside it as a .backup file.", 17,
                     kColTextDim);
         DrawHint(c, x + 24, y + h - 42, "A", "Restart");
     }
@@ -4965,10 +5017,18 @@ private:
         const std::string description = has_sel ? settings_rows[sel].description : std::string{};
         g_font.Draw(c, x + 20, footer_y + 16, g_font.Truncate(description, 18, w - 40), 18,
                     kColText);
-        std::string note =
-            has_sel && settings_rows[sel].needs_restart
-                ? std::string{"Takes effect the next time you launch a game."}
-                : std::string{"Graphics backend: "} + ActiveGraphicsBackendName();
+        const bool page_view = !PerGameOpen() && !settings_search_open;
+        const int hidden = page_view ? HiddenEntryCount(settings_page) : 0;
+        std::string note;
+        if (has_sel && settings_rows[sel].needs_restart) {
+            note = "Takes effect the next time you launch a game.";
+        } else if (hidden > 0) {
+            note = std::to_string(hidden) +
+                   (hidden == 1 ? " technical setting is" : " technical settings are") +
+                   " hidden here. X shows them.";
+        } else {
+            note = std::string{"Graphics backend: "} + ActiveGraphicsBackendName();
+        }
         if (PerGameOpen()) {
             const bool overridden =
                 has_sel && settings_rows[sel].using_global && !settings_rows[sel].using_global();
@@ -4992,6 +5052,11 @@ private:
             if (PerGameOpen() && has_sel && settings_rows[sel].set_global) {
                 hx += DrawHint(c, hx, hy, "X",
                                settings_rows[sel].using_global() ? "Override" : "Use Global") + 22;
+            }
+            if (page_view && ExpertEntryCount(settings_page) > 0) {
+                hx += DrawHint(c, hx, hy, "X",
+                               IsShowAllSettingsEnabled() ? "Show Less" : "Show All") +
+                      22;
             }
             hx += DrawHint(c, hx, hy, "Y", "Search") + 22;
             if (!settings_search_open) {

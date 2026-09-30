@@ -357,7 +357,29 @@ void RunGame(PadState& pad, const std::string& rom) {
 } // namespace
 
 int main(int argc, char* argv[]) {
-    SwitchFrontend::SetUpdaterExecutablePath(argc > 0 && argv[0] != nullptr ? argv[0] : "");
+    const std::string executable = argc > 0 && argv[0] != nullptr ? argv[0] : "";
+    SwitchFrontend::SetUpdaterExecutablePath(executable);
+    // An update is normally installed as EmuSwitch closes (below). If the last session never got
+    // there, install it now, while nothing has the NRO open yet, and start the new version in
+    // this one's place.
+    std::string update_error;
+    if (envHasNextLoad()) {
+        const SwitchFrontend::PendingUpdateResult update =
+            SwitchFrontend::FinishPendingUpdate(executable);
+        if (update.installed) {
+            std::string args = executable;
+            for (int i = 1; i < argc; ++i) {
+                const std::string arg = argv[i] != nullptr ? argv[i] : "";
+                args += arg.find(' ') == std::string::npos ? ' ' + arg : " \"" + arg + '"';
+            }
+            envSetNextLoad(executable.c_str(), args.c_str());
+            return 0;
+        }
+        if (update.attempted) {
+            update_error = update.error;
+            SwitchFrontend::DiscardPendingUpdate(executable);
+        }
+    }
     const bool have_socket = R_SUCCEEDED(socketInitializeDefault());
     if (have_socket) {
         nxlinkStdio();
@@ -398,6 +420,9 @@ int main(int argc, char* argv[]) {
 
     std::string pending_rom = (argc > 1 && argv[1] != nullptr) ? argv[1] : std::string{};
     boot_boost.reset();
+    if (!update_error.empty()) {
+        SwitchFrontend::SetMenuNotice("Couldn't install the update. " + update_error, true);
+    }
 
     while (appletMainLoop()) {
         std::string rom;
@@ -434,6 +459,10 @@ int main(int argc, char* argv[]) {
     if (have_romfs) {
         romfsExit();
     }
+    // With romfs closed nothing has the NRO open, so a downloaded update can take its place. The
+    // relaunch the menu queued then opens the new version. A failure is kept for the next launch
+    // to retry and report.
+    SwitchFrontend::FinishPendingUpdate(executable);
     if (have_socket) {
         socketExit();
     }

@@ -78,6 +78,7 @@ bool s_picture_editing = true;
 bool s_cover_download = true;
 int s_menu_theme = 0;
 bool s_game_cpu_boost = true;
+bool s_show_all_settings = false;
 std::string s_systems_order;
 std::string s_steamgriddb_key;
 int s_ds_screen_layout = 0;
@@ -623,6 +624,14 @@ bool IsGameCpuBoostEnabled() {
 
 void SetGameCpuBoostEnabled(bool enabled) {
     s_game_cpu_boost = enabled;
+}
+
+bool IsShowAllSettingsEnabled() {
+    return s_show_all_settings;
+}
+
+void SetShowAllSettingsEnabled(bool enabled) {
+    s_show_all_settings = enabled;
 }
 
 std::string GetSteamGridDbKey() {

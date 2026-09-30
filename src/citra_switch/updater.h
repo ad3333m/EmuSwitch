@@ -64,11 +64,24 @@ int CompareReleaseVersions(const std::string& lhs, const std::string& rhs);
 UpdateCheckResult CheckForUpdate(UpdateChannel channel,
                                  const std::atomic<bool>* cancel = nullptr);
 
-// Downloads and verifies release into a temporary file beside executable_path, then replaces the
-// running NRO.
+// Downloads and verifies release into a file beside executable_path. The running NRO is replaced
+// later by FinishPendingUpdate(), because romfs keeps it open while the app runs.
 UpdateInstallResult InstallUpdate(const UpdateRelease& release,
                                   const std::string& executable_path,
                                   UpdateProgressCallback progress);
+
+struct PendingUpdateResult {
+    bool attempted{}; // A downloaded update was waiting.
+    bool installed{};
+    std::string error;
+};
+
+// Swaps a downloaded update in for executable_path, keeping the old NRO as a .backup. Only call
+// it while nothing has the NRO open: before romfsInit() or after romfsExit().
+PendingUpdateResult FinishPendingUpdate(const std::string& executable_path);
+
+// Drops a downloaded update that couldn't be installed, so it isn't retried on every launch.
+void DiscardPendingUpdate(const std::string& executable_path);
 
 struct CachedReleaseNotes {
     std::string tag;

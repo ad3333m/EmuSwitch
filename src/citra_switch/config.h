@@ -102,6 +102,10 @@ const char* MenuThemeName(int theme);
 bool IsGameCpuBoostEnabled();
 void SetGameCpuBoostEnabled(bool enabled);
 
+// Whether the Settings pages also list their technical entries (EntryFlag::Expert).
+bool IsShowAllSettingsEnabled();
+void SetShowAllSettingsEnabled(bool enabled);
+
 // The player's SteamGridDB API key (steamgriddb.com > Preferences > API), or empty.
 std::string GetSteamGridDbKey();
 void SetSteamGridDbKey(const std::string& key);

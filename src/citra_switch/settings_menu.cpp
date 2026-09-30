@@ -357,7 +357,7 @@ std::vector<SettingsRow> RowsFor(const std::vector<const SettingEntry*>& entries
 } // namespace
 
 std::vector<SettingsRow> BuildCategoryRows(Category category) {
-    return RowsFor(EntriesIn(category), true);
+    return RowsFor(ShownEntriesIn(category), true);
 }
 
 std::vector<SettingsRow> BuildQuickRows(QuickSection section) {

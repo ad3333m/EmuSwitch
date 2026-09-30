@@ -16,14 +16,10 @@ enum class Category {
     General,
     Themes,
     Graphics,
-    Enhancements,
-    Stereo3D,
     Audio,
     Layout,
     Controls,
     System,
-    Console,
-    Storage,
     Advanced,
     Count,
 };
@@ -78,6 +74,8 @@ inline constexpr std::uint32_t Restart = 1u << 0;
 inline constexpr std::uint32_t Relayout = 1u << 1;
 // Only meaningful while a game is running.
 inline constexpr std::uint32_t QuickOnly = 1u << 2;
+// Technical: its page only lists it while Show All Settings is on. Search always finds it.
+inline constexpr std::uint32_t Expert = 1u << 3;
 } // namespace EntryFlag
 
 struct Meta {
@@ -128,6 +126,13 @@ struct SettingEntry {
 const std::vector<SettingEntry>& Registry();
 
 std::vector<const SettingEntry*> EntriesIn(Category category);
+
+// What the page lists: EntriesIn() less the Expert entries while Show All Settings is off.
+std::vector<const SettingEntry*> ShownEntriesIn(Category category);
+
+// How many Expert entries the page has, and how many of those it is hiding right now.
+int ExpertEntryCount(Category category);
+int HiddenEntryCount(Category category);
 
 std::vector<const SettingEntry*> EntriesInQuick(QuickSection section);
 

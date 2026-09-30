@@ -26,6 +26,7 @@ struct SettingsRow {
     std::function<void(bool)> set_global;
 };
 
+// A page as the Settings tab lists it, less its technical entries while Show All Settings is off.
 std::vector<SettingsRow> BuildCategoryRows(Category category);
 
 std::vector<SettingsRow> BuildQuickRows(QuickSection section);

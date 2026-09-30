@@ -28,6 +28,12 @@
 #define DEKOPON_VERSION "0.0.0"
 #endif
 
+#ifdef __SWITCH__
+// From libnx's fs_dev.h. <switch.h> itself can't come in here: its u128 clashes with the one in
+// common_types.h.
+extern "C" std::uint32_t fsdevGetLastResult(void);
+#endif
+
 namespace SwitchFrontend {
 namespace {
 
@@ -369,7 +375,25 @@ bool IsNro(const std::string& path) {
 }
 
 std::string ErrnoMessage(const char* action) {
-    return std::string{action} + ": " + std::strerror(errno);
+    const int error = errno;
+    std::string message = std::string{action} + ": " + std::strerror(error);
+#ifdef __SWITCH__
+    // fsdev turns every SD card result it has no errno for into EIO, so name the real one.
+    if (error == EIO) {
+        const std::uint32_t rc = fsdevGetLastResult();
+        const unsigned module = 2000 + (rc & 0x1FF);
+        const unsigned description = (rc >> 9) & 0x1FFF;
+        char code[24];
+        std::snprintf(code, sizeof(code), " (%04u-%04u)", module, description);
+        message += code;
+    }
+#endif
+    return message;
+}
+
+// Where a downloaded and verified update waits until the NRO it replaces is closed.
+std::string PendingUpdatePath(const std::string& executable_path) {
+    return executable_path + ".new";
 }
 
 std::string NotesPath() {
@@ -448,7 +472,7 @@ UpdateCheckResult CheckForUpdate(UpdateChannel channel, const std::atomic<bool>*
     curl_global_cleanup();
 
     if (!newest) {
-        result.error = "No compatible dekopon.nro release was found.";
+        result.error = "No compatible EmuSwitch.nro release was found.";
         return result;
     }
     if (CompareReleaseVersions(newest->tag, CurrentVersion()) <= 0) {
@@ -539,29 +563,63 @@ UpdateInstallResult InstallUpdate(const UpdateRelease& release,
         return result;
     }
 
-    // Keep the verified old NRO as a recovery file,
-    // and restore it immediately if installing the new file fails.
-    std::remove(backup.c_str());
-    if (std::rename(executable_path.c_str(), backup.c_str()) != 0) {
+    // The running NRO can't be replaced yet: romfs reads from it, which keeps it open, and the
+    // SD card won't rename an open file. The verified download waits beside it until
+    // FinishPendingUpdate() runs with romfs closed.
+    const std::string pending = PendingUpdatePath(executable_path);
+    std::remove(pending.c_str());
+    if (std::rename(temporary.c_str(), pending.c_str()) != 0) {
         std::remove(temporary.c_str());
-        result.error = ErrnoMessage("Couldn't back up the current NRO");
-        return result;
-    }
-    if (std::rename(temporary.c_str(), executable_path.c_str()) != 0) {
-        const std::string install_error = ErrnoMessage("Couldn't install the new NRO");
-        if (std::rename(backup.c_str(), executable_path.c_str()) != 0) {
-            result.error = install_error + " The backup is at " + backup + '.';
-        } else {
-            result.error = install_error + " The previous NRO was restored.";
-        }
+        result.error = ErrnoMessage("Couldn't store the update on the SD card");
         return result;
     }
 
     result.success = true;
     result.backup_path = backup;
-    LOG_INFO(Frontend, "Updated Dekopon {} -> {}, backup at {}", CurrentVersion(), release.tag,
+    LOG_INFO(Frontend, "Downloaded EmuSwitch {} -> {}, installing it on exit", CurrentVersion(),
+             release.tag);
+    return result;
+}
+
+PendingUpdateResult FinishPendingUpdate(const std::string& executable_path) {
+    PendingUpdateResult result;
+    const std::string pending = PendingUpdatePath(executable_path);
+    if (executable_path.empty() || !FileUtil::Exists(pending)) {
+        return result;
+    }
+    result.attempted = true;
+    if (!IsNro(pending)) {
+        std::remove(pending.c_str());
+        result.error = "The downloaded update is not a valid NRO.";
+        return result;
+    }
+
+    // Keep the old NRO as a recovery file, and put it straight back if the new one can't go in.
+    const std::string backup = executable_path + ".backup";
+    std::remove(backup.c_str());
+    if (std::rename(executable_path.c_str(), backup.c_str()) != 0) {
+        result.error = ErrnoMessage("Couldn't back up the current NRO");
+        return result;
+    }
+    if (std::rename(pending.c_str(), executable_path.c_str()) != 0) {
+        result.error = ErrnoMessage("Couldn't install the new NRO");
+        if (std::rename(backup.c_str(), executable_path.c_str()) != 0) {
+            result.error += " The previous NRO is at " + backup + '.';
+        } else {
+            result.error += " The previous NRO was restored.";
+        }
+        return result;
+    }
+    result.installed = true;
+    LOG_INFO(Frontend, "Installed the downloaded update over {}, backup at {}", executable_path,
              backup);
     return result;
+}
+
+void DiscardPendingUpdate(const std::string& executable_path) {
+    if (!executable_path.empty()) {
+        std::remove(PendingUpdatePath(executable_path).c_str());
+    }
 }
 
 CachedReleaseNotes LoadCachedReleaseNotes() {
