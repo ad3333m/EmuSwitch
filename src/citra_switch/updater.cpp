@@ -37,8 +37,13 @@ extern "C" std::uint32_t fsdevGetLastResult(void);
 namespace SwitchFrontend {
 namespace {
 
-constexpr std::string_view kReleasesApi =
-    "https://api.github.com/repos/ad3333m/dekopon/releases?per_page=20";
+// The repository's numeric ID survives a rename, so it is asked first. The names follow in case
+// that fails: the new one, then the old one, which GitHub redirects to wherever the repo went.
+constexpr std::array<std::string_view, 3> kReleasesApis{
+    "https://api.github.com/repositories/1389915798/releases?per_page=20",
+    "https://api.github.com/repos/ad3333m/EmuSwitch/releases?per_page=20",
+    "https://api.github.com/repos/ad3333m/dekopon/releases?per_page=20",
+};
 constexpr std::string_view kUserAgent = "EmuSwitch-Updater/" DEKOPON_VERSION;
 constexpr long kConnectTimeoutSeconds = 15;
 constexpr long kRequestTimeoutSeconds = 30;
@@ -251,7 +256,10 @@ int AbortWhenCancelled(void* userdata, curl_off_t, curl_off_t, curl_off_t, curl_
     return static_cast<const std::atomic<bool>*>(userdata)->load() ? 1 : 0;
 }
 
-std::optional<std::string> GetReleaseJson(const std::atomic<bool>* cancel, std::string& error) {
+// `answered` is set when GitHub replied, even with an error, as opposed to the request failing.
+std::optional<std::string> GetReleaseJson(std::string_view url, const std::atomic<bool>* cancel,
+                                          std::string& error, bool& answered) {
+    answered = false;
     CurlHandle curl;
     CurlHeaders headers;
     if (!curl || !headers.Add("Accept: application/vnd.github+json") ||
@@ -260,7 +268,7 @@ std::optional<std::string> GetReleaseJson(const std::atomic<bool>* cancel, std::
         return std::nullopt;
     }
     std::string body;
-    ConfigureCurl(curl.Get(), kReleasesApi);
+    ConfigureCurl(curl.Get(), url);
     curl_easy_setopt(curl.Get(), CURLOPT_HTTPHEADER, headers.Get());
     curl_easy_setopt(curl.Get(), CURLOPT_WRITEFUNCTION, WriteString);
     curl_easy_setopt(curl.Get(), CURLOPT_WRITEDATA, &body);
@@ -277,6 +285,7 @@ std::optional<std::string> GetReleaseJson(const std::atomic<bool>* cancel, std::
     }
     long status = 0;
     curl_easy_getinfo(curl.Get(), CURLINFO_RESPONSE_CODE, &status);
+    answered = true;
     if (status != 200) {
         error = "GitHub returned HTTP " + std::to_string(status) + '.';
         return std::nullopt;
@@ -436,7 +445,16 @@ UpdateCheckResult CheckForUpdate(UpdateChannel channel, const std::atomic<bool>*
     }
 
     std::string request_error;
-    const std::optional<std::string> body = GetReleaseJson(cancel, request_error);
+    std::optional<std::string> body;
+    for (const std::string_view url : kReleasesApis) {
+        bool answered = false;
+        body = GetReleaseJson(url, cancel, request_error, answered);
+        // Only a reply from GitHub is worth trying the next address for. No connection, or
+        // a cancelled check, would fail the same way again.
+        if (body || !answered) {
+            break;
+        }
+    }
     if (!body) {
         curl_global_cleanup();
         result.error = std::move(request_error);
