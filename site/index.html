@@ -5,395 +5,654 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EmuSwitch</title>
 <meta name="description" content="EmuSwitch is a free, open-source emulator launcher for Nintendo Switch homebrew: 3DS games built in, ten more consoles from the same menu.">
-<meta name="theme-color" content="#090A10">
+<meta name="theme-color" content="#1b1026">
 <meta property="og:type" content="website">
-<meta property="og:title" content="EmuSwitch">
+<meta property="og:title" content="EmuSwitch: emulation on the Switch isn't going dark">
 <meta property="og:description" content="A free, open-source emulator launcher for Nintendo Switch homebrew. 3DS built in, ten more consoles from the same menu.">
 <meta property="og:url" content="https://emuswitch.pages.dev/">
 <meta property="og:image" content="https://emuswitch.pages.dev/assets/og.jpg">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="assets/favicon.png">
+<link rel="preload" href="assets/lexend.woff2" as="font" type="font/woff2" crossorigin>
 <style>
+  @font-face {
+    font-family: "Lexend";
+    src: url("assets/lexend.woff2") format("woff2");
+    font-weight: 600 900;
+    font-display: swap;
+  }
   :root {
-    --bg: #090A10;
-    --bg-deep: #040508;
-    --surface: rgba(255, 255, 255, 0.045);
-    --surface-strong: rgba(255, 255, 255, 0.075);
-    --border: rgba(255, 255, 255, 0.09);
-    --text: #EEEEF6;
-    --text-dim: #A4A3BA;
-    --accent: #5EE7DF;
-    --accent-2: #8B7CFF;
-    --accent-3: #F07CD8;
-    --warn-bg: rgba(251, 191, 36, 0.10);
-    --warn-border: rgba(251, 191, 36, 0.35);
-    --warn-text: #FCD679;
-    --radius: 18px;
-    --max: 1120px;
+    --page: #0c0918;
+    --frame: #23142d;
+    --panel: #150f26;
+    --card: rgba(255, 255, 255, 0.045);
+    --card-strong: rgba(255, 255, 255, 0.075);
+    --line: rgba(255, 255, 255, 0.09);
+    --text: #fbf3f2;
+    --soft: #e7dae4;
+    --dim: #b6a8c4;
+    --coral: #ff4d61;
+    --coral-2: #ff7559;
+    --amber: #ffb35c;
+    --green: #3ddc84;
+    --display: "Lexend", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --max: 1180px;
     color-scheme: dark;
   }
   * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  html { background: var(--bg-deep); }
+  html { background: var(--page); scroll-behavior: smooth; scroll-padding-top: 96px; }
   body {
     margin: 0;
-    background: transparent;
     color: var(--text);
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: var(--body);
     font-size: 17px;
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
+    overflow-x: clip;
+    position: relative;
   }
-  /* The backdrop stays put while the page scrolls. A fixed layer rather than
-     background-attachment: fixed, which phones handle badly. */
+  /* A warm sky over the top of the page that fades into a starry night. */
   body::before {
-    content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    content: ""; position: absolute; left: 0; right: 0; top: 0; height: 1700px; z-index: -2; pointer-events: none;
     background:
-      radial-gradient(1100px 620px at 85% -10%, rgba(118, 64, 214, 0.28), transparent 60%),
-      radial-gradient(900px 560px at -10% 10%, rgba(24, 120, 150, 0.30), transparent 60%),
-      linear-gradient(180deg, var(--bg), var(--bg-deep));
+      radial-gradient(900px 800px at 0% 0%, rgba(160, 46, 92, 0.85), transparent 70%),
+      radial-gradient(900px 800px at 100% 10%, rgba(92, 48, 128, 0.75), transparent 70%),
+      linear-gradient(180deg, #5b2352 0%, #42193f 34%, #1d1230 70%, var(--page) 100%);
   }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
+  body::after {
+    content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; opacity: 0.6;
+    background-image:
+      radial-gradient(1px 1px at 23px 41px, #fff, transparent 60%),
+      radial-gradient(1px 1px at 141px 113px, #fff, transparent 60%),
+      radial-gradient(1.5px 1.5px at 87px 183px, #fff, transparent 60%),
+      radial-gradient(1px 1px at 203px 67px, #fff, transparent 60%),
+      radial-gradient(1px 1px at 251px 221px, #fff, transparent 60%),
+      radial-gradient(1.5px 1.5px at 171px 263px, #fff, transparent 60%);
+    background-size: 280px 280px;
+    -webkit-mask-image: linear-gradient(180deg, transparent 900px, #000 1600px);
+    mask-image: linear-gradient(180deg, transparent 900px, #000 1600px);
+  }
+  a { color: inherit; }
+  img { max-width: 100%; }
   .wrap { max-width: var(--max); margin: 0 auto; padding: 0 20px; }
+  .display { font-family: var(--display); letter-spacing: -0.035em; }
   code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.88em;
-    background: var(--surface-strong);
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    padding: 0.1em 0.45em;
-    white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.86em;
+    background: rgba(255, 255, 255, 0.08); border: 1px solid var(--line); border-radius: 7px;
+    padding: 0.08em 0.42em; white-space: nowrap;
   }
 
-  /* Top bar */
-  .nav {
-    position: sticky; top: 0; z-index: 10;
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    background: rgba(9, 10, 16, 0.72);
-    border-bottom: 1px solid var(--border);
+  /* Buttons */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+    font-family: var(--display); font-weight: 800; font-size: 16px; letter-spacing: -0.01em;
+    padding: 14px 24px; border-radius: 999px; text-decoration: none; white-space: nowrap;
+    border: 1.5px solid rgba(255, 255, 255, 0.32); color: var(--text); background: rgba(20, 10, 26, 0.25);
+    transition: transform .15s ease, background .15s ease, border-color .15s ease, box-shadow .15s ease;
   }
-  .nav .wrap { display: flex; align-items: center; gap: 24px; height: 64px; }
-  .brand { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 800; font-size: 19px; letter-spacing: -0.01em; }
-  .brand:hover { text-decoration: none; }
-  .brand img { width: 32px; height: 32px; border-radius: 9px; }
-  .nav-links { display: flex; gap: 22px; margin-left: auto; font-size: 15px; }
-  .nav-links a { color: var(--text-dim); }
-  .nav-links a:hover { color: var(--text); text-decoration: none; }
-  @media (max-width: 720px) { .nav-links .optional { display: none; } }
+  .btn:hover { transform: translateY(-1px); border-color: rgba(255, 255, 255, 0.6); }
+  .btn.coral {
+    border-color: transparent; color: #fff;
+    background: linear-gradient(100deg, var(--coral), var(--coral-2));
+    box-shadow: 0 10px 28px -10px rgba(255, 77, 97, 0.75);
+  }
+  .btn.coral:hover { box-shadow: 0 14px 34px -10px rgba(255, 77, 97, 0.9); }
+  .btn.amber { border-color: rgba(255, 179, 92, 0.55); color: var(--amber); background: transparent; padding: 10px 20px; font-size: 15px; }
+  .btn.small { padding: 10px 18px; font-size: 15px; }
+  .btn svg { width: 18px; height: 18px; flex: none; }
+
+  /* Floating menu bar */
+  .nav { position: sticky; top: 12px; z-index: 20; padding: 0 12px; }
+  .nav-bar {
+    max-width: var(--max); margin: 0 auto; height: 66px; padding: 0 12px 0 20px;
+    display: flex; align-items: center; gap: 18px;
+    background: rgba(32, 17, 36, 0.86); border: 1px solid var(--line); border-radius: 999px;
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 18px 40px -18px rgba(0, 0, 0, 0.8);
+  }
+  .brand { display: flex; align-items: center; gap: 11px; text-decoration: none; font-family: var(--display); font-weight: 800; font-size: 20px; letter-spacing: -0.03em; }
+  .brand img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12); }
+  .nav-links { display: flex; gap: 26px; margin: 0 auto; font-family: var(--display); font-weight: 700; font-size: 15px; }
+  .nav-links a { text-decoration: none; color: var(--soft); padding: 6px 0; border-bottom: 2px solid transparent; }
+  .nav-links a:hover { color: #fff; border-bottom-color: var(--coral); }
+  @media (max-width: 980px) { .nav-links { display: none; } .nav-bar .btn { margin-left: auto; } }
+
+  /* Panels */
+  section { padding: 22px 0; }
+  .panel {
+    background: rgba(21, 15, 38, 0.82); border: 1px solid var(--line); border-radius: 34px;
+    padding: 34px; box-shadow: 0 30px 80px -40px rgba(0, 0, 0, 0.9);
+  }
+  @media (max-width: 720px) { .panel { padding: 20px; border-radius: 26px; } }
+  .panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px 24px; margin-bottom: 22px; }
+  h2 { font-family: var(--display); font-weight: 800; letter-spacing: -0.04em; font-size: clamp(32px, 4.4vw, 50px); line-height: 1.04; margin: 0; }
+  .panel-head p { margin: 0; color: var(--dim); max-width: 34em; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 24px; padding: 22px; }
+  .card h3 { font-family: var(--display); font-weight: 800; letter-spacing: -0.025em; font-size: 20px; margin: 0 0 8px; line-height: 1.2; }
+  .card p { margin: 0; color: var(--soft); font-size: 16px; }
 
   /* Hero */
-  /* clip: the glow behind the screenshot reaches past the screen edge on phones. */
-  .hero { padding: 72px 0 40px; overflow-x: clip; }
-  .hero .wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 48px; align-items: center; }
-  @media (max-width: 900px) { .hero .wrap { grid-template-columns: 1fr; gap: 36px; } .hero { padding-top: 44px; } }
-  .eyebrow {
-    display: inline-flex; align-items: center; gap: 8px;
-    font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
-    color: var(--warn-text); background: var(--warn-bg); border: 1px solid var(--warn-border);
-    padding: 5px 12px; border-radius: 999px;
+  .hero-frame { background: var(--frame); border: 1px solid var(--line); border-radius: 38px; padding: 14px; margin-top: 26px; box-shadow: 0 40px 90px -40px rgba(0, 0, 0, 0.9); }
+  .hero {
+    position: relative; overflow: hidden; border-radius: 28px; min-height: 600px;
+    background: linear-gradient(180deg, #24123f 0%, #3c1a52 26%, #7a2c63 48%, #c4506f 64%, #f2876a 79%, #ffc488 92%);
+    isolation: isolate;
   }
-  h1 {
-    font-size: clamp(44px, 7vw, 76px); line-height: 1.02; letter-spacing: -0.035em;
-    margin: 18px 0 16px; font-weight: 850;
-    background: linear-gradient(100deg, #FFFFFF 10%, var(--accent) 45%, var(--accent-2) 75%, var(--accent-3));
-    -webkit-background-clip: text; background-clip: text; color: transparent;
+  .sun-glow {
+    position: absolute; z-index: 0; right: 4%; bottom: 60px; width: 640px; height: 420px;
+    background: radial-gradient(closest-side, rgba(255, 214, 158, 0.85), rgba(255, 150, 110, 0.35) 55%, transparent);
+    filter: blur(10px);
   }
-  .lead { font-size: clamp(18px, 2.2vw, 21px); color: var(--text-dim); margin: 0 0 28px; max-width: 34em; }
-  .lead strong { color: var(--text); font-weight: 650; }
-  .actions { display: flex; flex-wrap: wrap; gap: 12px; }
-  .btn {
-    display: inline-flex; align-items: center; gap: 10px;
-    padding: 13px 22px; border-radius: 14px; font-weight: 700; font-size: 16px;
-    border: 1px solid var(--border); color: var(--text); background: var(--surface);
-    transition: transform .15s ease, background .15s ease, border-color .15s ease;
+  .hero-controller {
+    position: absolute; z-index: 1; right: 9%; bottom: 92px; width: clamp(220px, 30vw, 380px);
+    filter: drop-shadow(0 0 34px rgba(255, 196, 140, 0.7)) drop-shadow(0 18px 30px rgba(40, 10, 40, 0.55));
+    animation: rise 6s ease-in-out infinite alternate;
   }
-  .btn:hover { text-decoration: none; transform: translateY(-1px); background: var(--surface-strong); }
-  .btn.primary {
-    color: #071315; border-color: transparent;
-    background: linear-gradient(100deg, var(--accent), #9AE6FF 55%, var(--accent-2));
-    box-shadow: 0 10px 30px -10px rgba(94, 231, 223, 0.55);
+  @keyframes rise { from { transform: translateY(6px); } to { transform: translateY(-8px); } }
+  .hills { position: absolute; z-index: 2; left: 0; right: 0; bottom: 0; width: 100%; height: 260px; display: block; }
+  .hero-copy { position: relative; z-index: 3; padding: 104px 56px 64px; max-width: 720px; }
+  .tag {
+    display: inline-flex; align-items: center; gap: 8px; margin-bottom: 22px;
+    font-family: var(--display); font-weight: 700; font-size: 13px; letter-spacing: 0.02em;
+    color: #ffe1b8; background: rgba(40, 14, 40, 0.35); border: 1px solid rgba(255, 210, 160, 0.4);
+    padding: 6px 13px; border-radius: 999px;
   }
-  .btn.primary:hover { filter: brightness(1.06); }
-  .btn svg { width: 18px; height: 18px; flex: none; }
-  .fine { margin-top: 14px; font-size: 14px; color: var(--text-dim); }
+  .tag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 10px var(--amber); }
+  .hero h1 {
+    font-family: var(--display); font-weight: 900; letter-spacing: -0.05em; line-height: 0.95;
+    font-size: clamp(44px, 6vw, 80px); margin: 0 0 22px; color: #fff8f3;
+    text-shadow: 0 6px 30px rgba(60, 10, 50, 0.45);
+  }
+  .hero .lede { font-size: clamp(17px, 1.6vw, 20px); color: #fff0eb; max-width: 31em; margin: 0 0 30px; text-shadow: 0 2px 14px rgba(60, 10, 50, 0.5); }
+  .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+  @media (max-width: 760px) {
+    .hero { min-height: 640px; }
+    .hero-copy { padding: 72px 22px 280px; }
+    .hero-controller { right: 50%; transform: translateX(50%); bottom: 70px; width: 200px; animation: none; }
+    .sun-glow { right: 50%; transform: translateX(50%); width: 420px; height: 300px; bottom: 30px; }
+  }
+  .under-hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 12px; margin-top: 12px; }
+  @media (max-width: 820px) { .under-hero { grid-template-columns: 1fr; } }
+  .stat { display: flex; align-items: center; gap: 18px; }
+  .stat .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 6px rgba(61, 220, 132, 0.16), 0 0 16px var(--green); flex: none; }
+  .stat .num { font-family: var(--display); font-weight: 800; font-size: 46px; letter-spacing: -0.04em; line-height: 1; }
+  .stat .label { color: var(--soft); }
+  .stat .latest { color: var(--dim); font-size: 14px; margin-top: 4px; min-height: 1.3em; }
+  .news h3 { color: var(--amber); }
+  .news ul { list-style: none; margin: 0; padding: 0; }
+  .news li { padding: 12px 0; border-bottom: 1px solid var(--line); color: var(--soft); }
+  .news li:last-child { border-bottom: 0; padding-bottom: 0; }
+  .news li strong { color: var(--text); font-weight: 650; }
 
-  .screen {
-    position: relative; border-radius: 22px; padding: 10px;
-    background: linear-gradient(160deg, rgba(255,255,255,0.14), rgba(255,255,255,0.03));
-    border: 1px solid var(--border);
-    box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(0,0,0,0.4) inset;
+  /* Statement and console marquee */
+  .statement { text-align: center; padding: 70px 0 40px; }
+  .statement img.mark { width: 92px; filter: drop-shadow(0 0 22px rgba(255, 140, 120, 0.45)); }
+  .statement p {
+    font-family: var(--display); font-weight: 800; letter-spacing: -0.03em; line-height: 1.22;
+    font-size: clamp(24px, 3.1vw, 36px); max-width: 21em; margin: 18px auto 34px;
   }
-  .screen img { display: block; width: 100%; height: auto; border-radius: 14px; }
-  .screen::after {
-    content: ""; position: absolute; inset: -40px; z-index: -1; border-radius: 40px;
-    background: radial-gradient(closest-side, rgba(139, 124, 255, 0.35), transparent);
-    filter: blur(20px);
+  .marquee {
+    overflow: hidden; padding: 6px 0;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
   }
-
-  /* Sections */
-  section { padding: 56px 0; }
-  .section-head { max-width: 46em; margin-bottom: 28px; }
-  h2 { font-size: clamp(28px, 3.6vw, 38px); letter-spacing: -0.025em; line-height: 1.15; margin: 0 0 10px; font-weight: 800; }
-  .section-head p { color: var(--text-dim); margin: 0; }
-
-  .callout {
-    display: flex; gap: 14px; align-items: flex-start;
-    border-radius: var(--radius); padding: 18px 20px;
-    background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--warn-text);
+  .marquee-track { display: flex; gap: 14px; width: max-content; animation: slide 46s linear infinite; }
+  .marquee:hover .marquee-track { animation-play-state: paused; }
+  @keyframes slide { to { transform: translateX(calc(-50% - 7px)); } }
+  .chip {
+    width: 150px; height: 78px; border-radius: 18px; display: grid; place-items: center; padding: 14px;
+    background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line);
   }
-  .callout svg { width: 22px; height: 22px; flex: none; margin-top: 3px; }
-  .callout p { margin: 0; color: #FBE7B6; }
-  .callout strong { color: var(--warn-text); }
+  .chip img { max-width: 100%; max-height: 44px; object-fit: contain; }
 
-  .gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
-  @media (max-width: 900px) { .gallery { grid-template-columns: 1fr; } }
-  figure { margin: 0; }
-  .shot { border-radius: 16px; overflow: hidden; border: 1px solid var(--border); background: var(--surface); }
-  .shot img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; object-position: top; }
-  figcaption { padding: 12px 4px 0; font-size: 15px; color: var(--text-dim); }
-  figcaption strong { color: var(--text); font-weight: 650; display: block; }
+  /* How it works */
+  .flow-card {
+    border-radius: 28px; padding: 40px; border: 1px solid var(--line);
+    background:
+      radial-gradient(700px 380px at 0% 100%, rgba(160, 40, 90, 0.35), transparent 70%),
+      radial-gradient(700px 380px at 100% 0%, rgba(70, 90, 160, 0.3), transparent 70%),
+      rgba(255, 255, 255, 0.03);
+  }
+  @media (max-width: 720px) { .flow-card { padding: 24px; } }
+  .flow-card h2 { max-width: 13em; margin-bottom: 26px; }
+  .flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 10px; align-items: stretch; }
+  .flow .arrow { align-self: center; color: var(--amber); font-size: 22px; font-family: var(--display); }
+  @media (max-width: 860px) { .flow { grid-template-columns: 1fr; } .flow .arrow { transform: rotate(90deg); justify-self: center; } }
+  .flow .card { background: rgba(14, 9, 24, 0.55); }
+  .bento { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 12px; margin-top: 12px; }
+  @media (max-width: 860px) { .bento { grid-template-columns: 1fr; } }
+  .bento .big {
+    position: relative; overflow: hidden; min-height: 300px; display: flex; flex-direction: column; justify-content: flex-end;
+    background: radial-gradient(500px 260px at 70% 10%, rgba(255, 150, 120, 0.16), transparent 70%), var(--card);
+  }
+  .bento .big h3 { font-size: clamp(26px, 3vw, 34px); letter-spacing: -0.04em; }
+  .fan { position: absolute; top: 26px; left: 24px; height: 120px; width: 360px; }
+  .fan img {
+    position: absolute; top: 0; width: 92px; height: 92px; border-radius: 18px; object-fit: cover;
+    box-shadow: 0 14px 30px -10px rgba(0, 0, 0, 0.8), 0 0 0 2px rgba(255, 255, 255, 0.12);
+  }
+  .fan img:nth-child(1) { left: 0; transform: rotate(-8deg); }
+  .fan img:nth-child(2) { left: 58px; transform: rotate(-3deg) translateY(4px); }
+  .fan img:nth-child(3) { left: 116px; transform: rotate(2deg); }
+  .fan img:nth-child(4) { left: 174px; transform: rotate(6deg) translateY(4px); }
+  .fan img:nth-child(5) { left: 232px; transform: rotate(10deg) translateY(8px); }
+  .side { display: grid; gap: 12px; }
 
-  .consoles { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  /* Consoles */
+  .consoles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 1000px) { .consoles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 520px) { .consoles { grid-template-columns: 1fr; } }
   .console {
-    border-radius: 16px; padding: 16px 18px; background: var(--surface); border: 1px solid var(--border);
-    display: flex; flex-direction: column; gap: 6px;
+    position: relative; border-radius: 24px; border: 1px solid var(--line); padding: 20px; min-height: 210px;
+    display: flex; flex-direction: column; justify-content: space-between; gap: 14px; overflow: hidden;
+    background: linear-gradient(160deg, color-mix(in srgb, var(--tint) 34%, transparent), rgba(255, 255, 255, 0.03) 70%);
   }
-  .console .name { font-weight: 750; font-size: 17px; display: flex; align-items: center; gap: 10px; }
-  .badge { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; padding: 2px 9px; border-radius: 999px; color: #fff; }
-  .console .runs { font-size: 14px; color: var(--text-dim); }
-  .console code { align-self: flex-start; }
+  .console.featured { grid-column: span 2; }
+  @media (max-width: 520px) { .console.featured { grid-column: auto; } }
+  .console .logo { height: 70px; display: flex; align-items: center; }
+  .console .logo img { max-height: 58px; max-width: 78%; object-fit: contain; filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.45)); }
+  .console h3 { font-family: var(--display); font-weight: 800; letter-spacing: -0.025em; font-size: 19px; margin: 0 0 4px; }
+  .console p { margin: 0 0 10px; color: var(--soft); font-size: 15px; }
+  .console .label { position: absolute; top: 16px; right: 16px; font-size: 12px; font-weight: 700; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; }
+  .note { color: var(--dim); font-size: 15px; margin: 16px 2px 0; }
 
-  .features { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
-  .feature { border-radius: var(--radius); padding: 22px; background: var(--surface); border: 1px solid var(--border); }
-  .feature .icon {
-    width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; margin-bottom: 12px;
-    background: linear-gradient(135deg, rgba(94, 231, 223, 0.18), rgba(139, 124, 255, 0.22));
-    border: 1px solid var(--border);
+  /* Steps */
+  .steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 1000px) { .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 560px) { .steps { grid-template-columns: 1fr; } }
+  .step .n {
+    width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; margin-bottom: 14px;
+    font-family: var(--display); font-weight: 900; color: #2a1405; background: linear-gradient(135deg, #ffd08a, var(--amber));
   }
-  .feature .icon svg { width: 22px; height: 22px; stroke: var(--accent); }
-  .feature h3 { margin: 0 0 6px; font-size: 18px; letter-spacing: -0.01em; }
-  .feature p { margin: 0; color: var(--text-dim); font-size: 15.5px; }
 
-  .steps { counter-reset: step; display: grid; gap: 14px; margin: 0; padding: 0; list-style: none; }
-  .steps li {
-    counter-increment: step; position: relative; padding: 18px 20px 18px 70px;
-    border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border);
+  /* Screens */
+  .shots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 900px) { .shots { grid-template-columns: 1fr; } }
+  .shot { margin: 0; }
+  .shot img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; object-position: top; border-radius: 20px; border: 1px solid var(--line); }
+  .shot figcaption { padding: 10px 4px 0; color: var(--dim); font-size: 15px; }
+  .shot figcaption strong { color: var(--text); font-family: var(--display); font-weight: 800; letter-spacing: -0.02em; display: block; font-size: 17px; }
+
+  /* Team */
+  .team { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 900px) { .team { grid-template-columns: 1fr; } .member.owner { grid-column: auto; } }
+  .member { display: flex; align-items: center; gap: 16px; padding: 12px; border-radius: 22px; border: 1px solid var(--line); background: var(--card); }
+  .member.owner {
+    grid-column: span 2; padding: 14px;
+    border-color: rgba(255, 179, 92, 0.45);
+    background: linear-gradient(120deg, rgba(255, 140, 90, 0.16), rgba(255, 255, 255, 0.03) 60%);
   }
-  .steps li::before {
-    content: counter(step); position: absolute; left: 18px; top: 16px;
-    width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center;
-    font-weight: 800; color: #071315; background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  .member img { width: 112px; height: 112px; border-radius: 20px; object-fit: cover; flex: none; }
+  .member .about { color: var(--dim); font-size: 15px; margin-top: 6px; }
+  .member > div { min-width: 0; }
+  @media (max-width: 520px) {
+    .member img { width: 76px; height: 76px; border-radius: 16px; }
+    .member .pill { white-space: normal; }
   }
-  .steps strong { display: block; font-size: 17px; }
-  .steps span { color: var(--text-dim); font-size: 15.5px; }
-  .note { margin-top: 16px; color: var(--text-dim); font-size: 15.5px; }
-
-  .legal {
-    border-radius: var(--radius); padding: 24px; background: var(--surface); border: 1px solid var(--border);
-    border-left: 4px solid var(--accent-2);
+  .member .name { font-family: var(--display); font-weight: 800; letter-spacing: -0.02em; font-size: 20px; }
+  .member .role { color: var(--soft); font-size: 15px; display: flex; align-items: center; gap: 6px; }
+  .member .role svg { width: 16px; height: 16px; color: var(--amber); }
+  .pill {
+    display: inline-block; margin-top: 8px; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap;
+    color: #c9f7dc; background: rgba(61, 220, 132, 0.12); border: 1px solid rgba(61, 220, 132, 0.35); padding: 3px 10px; border-radius: 999px;
   }
-  .legal p { margin: 0 0 10px; }
-  .legal p:last-child { margin: 0; color: var(--text-dim); font-size: 15px; }
+  .builtwith { margin-top: 26px; }
+  .builtwith h3 { font-family: var(--display); font-weight: 800; font-size: 18px; letter-spacing: -0.02em; margin: 0 0 12px; color: var(--soft); }
+  .credits { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+  .credit { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 18px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.03); text-decoration: none; }
+  .credit:hover { background: var(--card-strong); }
+  .credit .mono {
+    width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; flex: none;
+    font-family: var(--display); font-weight: 900; font-size: 15px; color: #fff; background: var(--mono, #4b3a6b);
+  }
+  .credit b { display: block; font-family: var(--display); font-weight: 800; letter-spacing: -0.02em; }
+  .credit span { color: var(--dim); font-size: 14px; }
 
-  .credits { columns: 2; column-gap: 32px; padding-left: 20px; margin: 0; color: var(--text-dim); }
-  @media (max-width: 720px) { .credits { columns: 1; } }
-  .credits li { margin-bottom: 8px; break-inside: avoid; }
-  .credits strong { color: var(--text); font-weight: 650; }
+  /* Legal, CTA, footer */
+  .legal { border-left: 4px solid var(--amber); }
+  .legal p { margin: 0 0 8px; color: var(--soft); }
+  .legal p:first-of-type { color: var(--text); font-size: 18px; }
+  .cta {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 18px 28px;
+    border-radius: 34px; padding: 30px 34px; border: 1px solid var(--line);
+    background: radial-gradient(600px 220px at 85% 50%, rgba(255, 120, 90, 0.18), transparent 70%), rgba(28, 18, 46, 0.9);
+  }
+  .cta h2 { font-size: clamp(28px, 3.6vw, 40px); }
+  .cta p { margin: 6px 0 0; color: var(--soft); }
+  .cta .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+  footer { padding: 22px 0 46px; }
+  .foot { border-radius: 34px; border: 1px solid rgba(255, 255, 255, 0.14); padding: 36px 40px 28px; background: rgba(12, 9, 24, 0.75); }
+  @media (max-width: 720px) { .foot { padding: 26px 22px; } }
+  .foot-top { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr)); gap: 28px; }
+  @media (max-width: 860px) { .foot-top { grid-template-columns: 1fr 1fr; } .foot-top > :first-child { grid-column: 1 / -1; } }
+  .foot .brand { font-size: 22px; margin-bottom: 14px; }
+  .foot-top p { color: var(--dim); font-size: 15px; margin: 0; max-width: 26em; }
+  .foot h4 { font-family: var(--display); font-weight: 800; font-size: 13px; letter-spacing: 0.1em; margin: 6px 0 14px; }
+  .foot ul { list-style: none; margin: 0; padding: 0; }
+  .foot li { margin-bottom: 12px; }
+  .foot li a { color: var(--dim); text-decoration: none; font-size: 15px; }
+  .foot li a:hover { color: var(--text); }
+  .foot-bottom { margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 16px; }
+  .foot-bottom small { color: var(--dim); font-size: 13px; display: block; max-width: 46em; }
+  .foot-bottom .copy { font-family: var(--display); font-weight: 700; letter-spacing: 0.12em; font-size: 12px; color: var(--dim); margin-bottom: 6px; }
+  .foot-bottom .follow { display: flex; align-items: center; gap: 14px; font-family: var(--display); font-weight: 700; letter-spacing: 0.12em; font-size: 12px; color: var(--dim); }
+  .foot-bottom .follow a { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--soft); }
+  .foot-bottom .follow a:hover { background: var(--card-strong); color: #fff; }
+  .foot-bottom .follow svg { width: 20px; height: 20px; }
 
-  footer { padding: 40px 0 56px; border-top: 1px solid var(--border); margin-top: 24px; color: var(--text-dim); font-size: 14px; }
-  footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 28px; align-items: center; justify-content: space-between; }
+  @media (prefers-reduced-motion: reduce) {
+    .hero-controller, .marquee-track { animation: none; }
+    .btn { transition: none; }
+  }
 </style>
 </head>
 <body>
 
 <header class="nav">
-  <div class="wrap">
-    <a class="brand" href="#top" aria-label="EmuSwitch home"><img src="assets/icon.jpg" alt="" width="32" height="32">EmuSwitch</a>
+  <div class="nav-bar">
+    <a class="brand" href="#top"><img src="assets/icon.jpg" alt="" width="34" height="34">EmuSwitch</a>
     <nav class="nav-links" aria-label="Sections">
-      <a class="optional" href="#screens">Screens</a>
-      <a class="optional" href="#consoles">Consoles</a>
-      <a class="optional" href="#features">Features</a>
+      <a href="#consoles">Consoles</a>
+      <a href="#how">How it works</a>
       <a href="#install">Install</a>
-      <a href="https://github.com/ad3333m/dekopon">GitHub</a>
+      <a href="#screens">Screens</a>
+      <a href="#team">Team</a>
+      <a href="https://github.com/ad3333m/dekopon">Developers</a>
     </nav>
+    <a class="btn coral small" href="https://github.com/ad3333m/dekopon/releases/latest/download/EmuSwitch.nro">Download</a>
   </div>
 </header>
 
 <main id="top">
-  <div class="hero">
-    <div class="wrap">
-      <div>
-        <span class="eyebrow">In testing</span>
-        <h1>EmuSwitch</h1>
-        <p class="lead">A free, open-source emulator launcher for <strong>Nintendo Switch homebrew</strong>. Play 3DS games with the built-in 3DS emulator, and ten more consoles from the same menu.</p>
-        <div class="actions">
-          <a class="btn primary" href="https://github.com/ad3333m/dekopon/releases/latest/download/EmuSwitch.nro">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
-            Download EmuSwitch.nro
-          </a>
-          <a class="btn" href="https://github.com/ad3333m/dekopon">
-            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.5 9.5 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/></svg>
-            Source on GitHub
-          </a>
+  <div class="wrap">
+    <div class="hero-frame">
+      <div class="hero">
+        <div class="sun-glow" aria-hidden="true"></div>
+        <img class="hero-controller" src="assets/controller.svg" alt="" width="380" height="263">
+        <svg class="hills" viewBox="0 0 1200 260" preserveAspectRatio="none" aria-hidden="true">
+          <path fill="#8a3366" d="M0 150 C 160 110 300 120 460 140 C 640 162 760 92 940 96 C 1060 99 1140 120 1200 128 V260 H0 Z"/>
+          <path fill="#561f58" d="M0 190 C 180 150 340 168 520 176 C 700 184 820 140 980 146 C 1090 150 1160 168 1200 176 V260 H0 Z"/>
+          <path fill="#2c1438" d="M0 226 C 200 200 380 214 560 218 C 760 222 900 196 1060 200 C 1130 202 1170 210 1200 214 V260 H0 Z"/>
+        </svg>
+        <div class="hero-copy">
+          <span class="tag">Still in testing</span>
+          <h1>Emulation on the Switch isn't going dark.</h1>
+          <p class="lede">EmuSwitch is a free, open-source emulator launcher for Switch homebrew: 3DS games run built in, and ten more consoles open from the same menu.</p>
+          <div class="hero-actions">
+            <a class="btn coral" href="https://github.com/ad3333m/dekopon/releases/latest/download/EmuSwitch.nro">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+              Download EmuSwitch
+            </a>
+            <a class="btn" href="#how">How it works</a>
+          </div>
         </div>
-        <p class="fine">The latest release, straight from GitHub. <a href="https://github.com/ad3333m/dekopon/releases">All releases</a></p>
       </div>
-      <div class="screen">
-        <img src="assets/home.webp" width="1280" height="720" alt="The EmuSwitch Home screen: games grouped by console, with a dock for Home, Systems, Settings and Paths.">
+      <div class="under-hero">
+        <div class="card stat">
+          <span class="dot" aria-hidden="true"></span>
+          <div>
+            <div class="num">11</div>
+            <div class="label">consoles in one menu</div>
+            <div class="latest" id="latest"></div>
+          </div>
+        </div>
+        <div class="card news">
+          <h3>What's new</h3>
+          <ul>
+            <li><strong>3.0.0-RC11</strong>: a fix for the black screen some people got after closing a game.</li>
+            <li><strong>3.0.0-RC10</strong>: simpler Settings, and updates now install from inside the app.</li>
+            <li><strong>3.0.0-RC9</strong>: no more flashes when saving, loading or closing a game.</li>
+          </ul>
+        </div>
       </div>
     </div>
   </div>
 
-  <section style="padding-top: 8px;">
+  <div class="statement">
     <div class="wrap">
-      <div class="callout" role="note">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
-        <p><strong>EmuSwitch is still in testing and doesn't fully work yet.</strong> Expect bugs, crashes and games that don't run properly.</p>
+      <img class="mark" src="assets/controller.svg" alt="" width="92" height="64">
+      <p>EmuSwitch is one home for your games on the Switch: free, open source, and running everything from the 3DS to the Wii U.</p>
+    </div>
+    <div class="marquee" aria-label="Supported consoles">
+      <div class="marquee-track">
+        <div class="chip"><img src="assets/consoles/3ds.webp" alt="Nintendo 3DS"></div>
+        <div class="chip"><img src="assets/consoles/ds.webp" alt="Nintendo DS"></div>
+        <div class="chip"><img src="assets/consoles/gb.webp" alt="Game Boy"></div>
+        <div class="chip"><img src="assets/consoles/gba.webp" alt="Game Boy Advance"></div>
+        <div class="chip"><img src="assets/consoles/nes.webp" alt="NES"></div>
+        <div class="chip"><img src="assets/consoles/snes.webp" alt="Super Nintendo"></div>
+        <div class="chip"><img src="assets/consoles/n64.webp" alt="Nintendo 64"></div>
+        <div class="chip"><img src="assets/consoles/ps1.webp" alt="PlayStation"></div>
+        <div class="chip"><img src="assets/consoles/ps2.webp" alt="PlayStation 2"></div>
+        <div class="chip"><img src="assets/consoles/psp.webp" alt="PSP"></div>
+        <div class="chip"><img src="assets/consoles/wiiu.webp" alt="Wii U"></div>
+        <div class="chip" aria-hidden="true"><img src="assets/consoles/3ds.webp" alt=""></div>
+        <div class="chip" aria-hidden="true"><img src="assets/consoles/ds.webp" alt=""></div>
+        <div class="chip" aria-hidden="true"><img src="assets/consoles/gb.webp" alt=""></div>
+        <div class="chip" aria-hidden="true"><img src="assets/consoles/gba.webp" alt=""></div>
+        <div class="chip" aria-hidden="true"><img src="assets/consoles/nes.webp" alt=""></div>
+        <div class="chip" aria-hidden="true"><img src="assets/consoles/snes.webp" alt=""></div>
+        <div class="chip" aria-hidden="true"><img src="assets/consoles/n64.webp" alt=""></div>
+        <div class="chip" aria-hidden="true"><img src="assets/consoles/ps1.webp" alt=""></div>
+        <div class="chip" aria-hidden="true"><img src="assets/consoles/ps2.webp" alt=""></div>
+        <div class="chip" aria-hidden="true"><img src="assets/consoles/psp.webp" alt=""></div>
+        <div class="chip" aria-hidden="true"><img src="assets/consoles/wiiu.webp" alt=""></div>
       </div>
     </div>
-  </section>
+  </div>
 
-  <section id="screens">
+  <section id="how">
     <div class="wrap">
-      <div class="section-head">
-        <h2>One menu for everything</h2>
-        <p>Your games grouped by console, with box art, themes and settings that stay out of the way.</p>
+      <div class="panel">
+        <div class="flow-card">
+          <h2>Pick a game. EmuSwitch opens it in the right emulator.</h2>
+          <div class="flow">
+            <div class="card"><h3>Your game</h3><p>One you own and dumped yourself, in its console's folder on the SD card.</p></div>
+            <div class="arrow" aria-hidden="true">›</div>
+            <div class="card"><h3>EmuSwitch</h3><p>Finds it and puts it on Home with its box art, sorted by console.</p></div>
+            <div class="arrow" aria-hidden="true">›</div>
+            <div class="card"><h3>The emulator</h3><p>3DS games run inside EmuSwitch. The others open in the emulator that comes packed with it.</p></div>
+          </div>
+        </div>
+        <div class="bento">
+          <div class="card big">
+            <div class="fan" aria-hidden="true">
+              <img src="assets/covers/cover_0.webp" alt="">
+              <img src="assets/covers/cover_2.webp" alt="">
+              <img src="assets/covers/cover_5.webp" alt="">
+              <img src="assets/covers/cover_8.webp" alt="">
+              <img src="assets/covers/cover_9.webp" alt="">
+            </div>
+            <h3>Every game, with its picture</h3>
+            <p>Box art downloads by itself while you're online. Or pick your own pictures from the SD card or SteamGridDB, and choose from 42 themes.</p>
+          </div>
+          <div class="side">
+            <div class="card"><h3>Free, for real</h3><p>Open source. No subscription, no ads, no accounts.</p></div>
+            <div class="card"><h3>Your files stay yours</h3><p>Games, saves and settings stay on your SD card. Nothing is uploaded and nothing is tracked.</p></div>
+          </div>
+        </div>
       </div>
-      <div class="gallery">
-        <figure>
-          <div class="shot"><img src="assets/home.webp" width="1280" height="720" loading="lazy" alt="Home: games in sections by console, each with a cover picture."></div>
-          <figcaption><strong>Home</strong>Every game, sorted by console.</figcaption>
-        </figure>
-        <figure>
-          <div class="shot"><img src="assets/settings.webp" width="1280" height="720" loading="lazy" alt="Settings: eight tabs, with only the main settings on each page."></div>
-          <figcaption><strong>Settings</strong>The main settings up front. Press X to show the technical ones.</figcaption>
-        </figure>
-        <figure>
-          <div class="shot"><img src="assets/themes.webp" width="1280" height="900" loading="lazy" alt="Settings, Themes: a grid of colour themes, each shown as a small picture of the menu."></div>
-          <figcaption><strong>42 themes</strong>For the menus and the in-game quick menu.</figcaption>
-        </figure>
-      </div>
-      <p class="note">Screens rendered with EmuSwitch's own drawing code. The games shown are made up.</p>
     </div>
   </section>
 
   <section id="consoles">
     <div class="wrap">
-      <div class="section-head">
-        <h2>Eleven consoles</h2>
-        <p>3DS games run in EmuSwitch itself. The other consoles' emulators are packed inside EmuSwitch, so there's nothing else to install. Put games you own and dumped yourself in their console's folder on the SD card.</p>
-      </div>
-      <div class="consoles">
-        <div class="console"><div class="name"><span class="badge" style="background:#E21B33">3DS</span>Nintendo 3DS</div><div class="runs">EmuSwitch's built-in 3DS emulator</div><code>/switch/dekopon/roms/</code></div>
-        <div class="console"><div class="name"><span class="badge" style="background:#3D7BFF">DS</span>Nintendo DS</div><div class="runs">RetroArch (DeSmuME)</div><code>/roms/ds/</code></div>
-        <div class="console"><div class="name"><span class="badge" style="background:#22C55E">GB</span>Game Boy / Color</div><div class="runs">RetroArch (Gambatte)</div><code>/roms/gb/</code></div>
-        <div class="console"><div class="name"><span class="badge" style="background:#8B5CF6">GBA</span>Game Boy Advance</div><div class="runs">RetroArch (mGBA)</div><code>/roms/gba/</code></div>
-        <div class="console"><div class="name"><span class="badge" style="background:#E13B3B">NES</span>NES</div><div class="runs">RetroArch (Nestopia)</div><code>/roms/nes/</code></div>
-        <div class="console"><div class="name"><span class="badge" style="background:#7E6CD8">SNES</span>Super Nintendo</div><div class="runs">RetroArch (Snes9x)</div><code>/roms/snes/</code></div>
-        <div class="console"><div class="name"><span class="badge" style="background:#109A4E">N64</span>Nintendo 64</div><div class="runs">RetroArch (Mupen64Plus-Next)</div><code>/roms/n64/</code></div>
-        <div class="console"><div class="name"><span class="badge" style="background:#6B7280">PS1</span>PlayStation</div><div class="runs">RetroArch (PCSX ReARMed)</div><code>/roms/ps1/</code></div>
-        <div class="console"><div class="name"><span class="badge" style="background:#4B5563">PSP</span>PSP</div><div class="runs">RetroArch (PPSSPP)</div><code>/roms/psp/</code></div>
-        <div class="console"><div class="name"><span class="badge" style="background:#0E88C8">PS2</span>PlayStation 2</div><div class="runs">ARMSX2-NX, needs your own BIOS in the folder</div><code>/roms/ps2/</code></div>
-        <div class="console"><div class="name"><span class="badge" style="background:#0F9F8F">Wii U</span>Wii U</div><div class="runs">Cemu-nx</div><code>/roms/wiiu/</code></div>
-      </div>
-      <p class="note">3DS CIAs in <code>/cias/</code>, <code>/cia/</code> or <code>/roms/cia/</code> are installed automatically. They must be decrypted. The 3DS folder can be changed in the Paths tab.</p>
-    </div>
-  </section>
-
-  <section id="features">
-    <div class="wrap">
-      <div class="section-head">
-        <h2>What's inside</h2>
-      </div>
-      <div class="features">
-        <div class="feature">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg></div>
-          <h3>Home and Systems</h3>
-          <p>Games grouped by console with box art, which downloads automatically while you're online. You can also pick pictures from the SD card or from SteamGridDB. Reorder consoles and games as you like.</p>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Eleven consoles, one menu</h2>
+          <a class="btn amber" href="https://github.com/ad3333m/dekopon/releases">All releases</a>
         </div>
-        <div class="feature">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9c0-1.1-.9-1.5-1.8-1.5h-2.4A2.3 2.3 0 0 1 14.5 8V6.4C14.5 4.5 13.6 3 12 3Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="8" cy="15.5" r="1"/></svg></div>
-          <h3>42 themes</h3>
-          <p>Pick a colour theme in Settings. It changes the menus and the in-game quick menu together.</p>
+        <div class="consoles">
+          <div class="console featured" style="--tint:#e21b33"><span class="label">Built in</span><div class="logo"><img src="assets/consoles/3ds.webp" alt="Nintendo 3DS"></div><div><h3>Nintendo 3DS</h3><p>Runs inside EmuSwitch, with save states, cheats, mods, texture packs, amiibo and 1080p docked.</p><code>/switch/dekopon/roms/</code></div></div>
+          <div class="console" style="--tint:#3d7bff"><div class="logo"><img src="assets/consoles/ds.webp" alt="Nintendo DS"></div><div><h3>Nintendo DS</h3><p>RetroArch (DeSmuME)</p><code>/roms/ds/</code></div></div>
+          <div class="console" style="--tint:#22c55e"><div class="logo"><img src="assets/consoles/gb.webp" alt="Game Boy"></div><div><h3>Game Boy / Color</h3><p>RetroArch (Gambatte)</p><code>/roms/gb/</code></div></div>
+          <div class="console" style="--tint:#8b5cf6"><div class="logo"><img src="assets/consoles/gba.webp" alt="Game Boy Advance"></div><div><h3>Game Boy Advance</h3><p>RetroArch (mGBA)</p><code>/roms/gba/</code></div></div>
+          <div class="console" style="--tint:#e13b3b"><div class="logo"><img src="assets/consoles/nes.webp" alt="NES"></div><div><h3>NES</h3><p>RetroArch (Nestopia)</p><code>/roms/nes/</code></div></div>
+          <div class="console" style="--tint:#7e6cd8"><div class="logo"><img src="assets/consoles/snes.webp" alt="Super Nintendo"></div><div><h3>Super Nintendo</h3><p>RetroArch (Snes9x)</p><code>/roms/snes/</code></div></div>
+          <div class="console" style="--tint:#109a4e"><div class="logo"><img src="assets/consoles/n64.webp" alt="Nintendo 64"></div><div><h3>Nintendo 64</h3><p>RetroArch (Mupen64Plus-Next)</p><code>/roms/n64/</code></div></div>
+          <div class="console" style="--tint:#9ca3b5"><div class="logo"><img src="assets/consoles/ps1.webp" alt="PlayStation"></div><div><h3>PlayStation</h3><p>RetroArch (PCSX ReARMed)</p><code>/roms/ps1/</code></div></div>
+          <div class="console" style="--tint:#38bdf8"><div class="logo"><img src="assets/consoles/ps2.webp" alt="PlayStation 2"></div><div><h3>PlayStation 2</h3><p>ARMSX2-NX, with your own BIOS in the folder</p><code>/roms/ps2/</code></div></div>
+          <div class="console" style="--tint:#64748b"><div class="logo"><img src="assets/consoles/psp.webp" alt="PSP"></div><div><h3>PSP</h3><p>RetroArch (PPSSPP)</p><code>/roms/psp/</code></div></div>
+          <div class="console" style="--tint:#2dd4bf"><div class="logo"><img src="assets/consoles/wiiu.webp" alt="Wii U"></div><div><h3>Wii U</h3><p>Cemu-nx</p><code>/roms/wiiu/</code></div></div>
         </div>
-        <div class="feature">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h10"/><path d="M18 6h2"/><circle cx="16" cy="6" r="2"/><path d="M4 12h4"/><path d="M12 12h8"/><circle cx="10" cy="12" r="2"/><path d="M4 18h12"/><circle cx="18" cy="18" r="2"/></svg></div>
-          <h3>Simple settings</h3>
-          <p>Each page shows the settings people change. Press X to see every setting, or search for any of them by name.</p>
-        </div>
-        <div class="feature">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4"/><rect x="8" y="13" width="8" height="5" rx="1"/></svg></div>
-          <h3>Save states and backups</h3>
-          <p>Save and load states from the quick menu. Back up 3DS saves in Checkpoint's format, so they move between EmuSwitch and a real 3DS.</p>
-        </div>
-        <div class="feature">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="20" height="10" rx="5"/><path d="M7 10v4"/><path d="M5 12h4"/><circle cx="16" cy="11" r="1"/><circle cx="18" cy="13" r="1"/></svg></div>
-          <h3>Made for 3DS on Switch</h3>
-          <p>Screen layouts on R3, touch with a pointer, gyro, cheats, mods, texture packs, amiibo, upscaling and 1080p docked.</p>
-        </div>
-        <div class="feature">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></svg></div>
-          <h3>Updates itself</h3>
-          <p>Settings, General, Check for Updates: EmuSwitch downloads the new version, checks it, and installs it as it restarts.</p>
-        </div>
+        <p class="note">3DS CIAs in <code>/cias/</code>, <code>/cia/</code> or <code>/roms/cia/</code> install automatically; they must be decrypted. The 3DS folder can be changed in the Paths tab.</p>
       </div>
     </div>
   </section>
 
   <section id="install">
     <div class="wrap">
-      <div class="section-head">
-        <h2>Install</h2>
-        <p>You need a Switch that runs homebrew.</p>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Playing in four steps</h2>
+          <p>On a Switch that runs homebrew. Nothing to sign up for.</p>
+        </div>
+        <div class="steps">
+          <div class="card step"><div class="n">1</div><h3>Download EmuSwitch</h3><p>Get <code>EmuSwitch.nro</code> from the <a href="https://github.com/ad3333m/dekopon/releases/latest">latest release</a>.</p></div>
+          <div class="card step"><div class="n">2</div><h3>Copy it to /switch/</h3><p>On your SD card, next to your other homebrew.</p></div>
+          <div class="card step"><div class="n">3</div><h3>Add your games</h3><p>Each console has its folder, like <code>/roms/gba/</code>. 3DS games go in <code>/switch/dekopon/roms/</code>.</p></div>
+          <div class="card step"><div class="n">4</div><h3>Play</h3><p>Open EmuSwitch from the Homebrew Menu and pick a game. Updates install from Settings.</p></div>
+        </div>
+        <p class="note">On 3.0.0-RC9 or older? Install the next version by hand once: those versions couldn't replace their own file while running.</p>
       </div>
-      <ol class="steps">
-        <li><strong>Download EmuSwitch.nro</strong><span>From the <a href="https://github.com/ad3333m/dekopon/releases/latest">latest release</a> on GitHub.</span></li>
-        <li><strong>Copy it to the <code>/switch/</code> folder on your SD card</strong><span>EmuSwitch keeps its settings, 3DS saves and logs in <code>/switch/dekopon/</code>, the same folder Dekopon uses, so an existing Dekopon setup carries over.</span></li>
-        <li><strong>Open it from the Homebrew Menu</strong><span>Then put your games in their console's folder (see above).</span></li>
-      </ol>
-      <p class="note">If you're on 3.0.0-RC9 or older, install the next version by hand once. Those versions couldn't replace their own file while running.</p>
+    </div>
+  </section>
+
+  <section id="screens">
+    <div class="wrap">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>See it on your Switch</h2>
+          <p>Drawn with EmuSwitch's own menu code. The games shown are made up.</p>
+        </div>
+        <div class="shots">
+          <figure class="shot"><img src="assets/home.webp" width="1280" height="720" alt="Home: games in sections by console, each with a picture."><figcaption><strong>Home</strong>Every game, sorted by console.</figcaption></figure>
+          <figure class="shot"><img src="assets/settings.webp" width="1280" height="720" alt="Settings: eight tabs with the main settings on each page."><figcaption><strong>Settings</strong>The main settings up front. X shows the rest.</figcaption></figure>
+          <figure class="shot"><img src="assets/themes.webp" width="1280" height="900" alt="Themes: a grid of colour themes."><figcaption><strong>42 themes</strong>For the menus and the in-game quick menu.</figcaption></figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="team">
+    <div class="wrap">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Meet the team</h2>
+          <p>EmuSwitch is an independent project, made by one person.</p>
+        </div>
+        <div class="team">
+          <div class="member owner">
+            <img src="assets/team/adxmm.webp" alt="adxmm" width="96" height="96">
+            <div>
+              <div class="name">adxmm</div>
+              <div class="role"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z"/></svg>Project owner</div>
+              <div class="about">Builds and runs EmuSwitch solo, with no company behind it.</div>
+              <span class="pill">Independent developer</span>
+            </div>
+          </div>
+        </div>
+        <div class="builtwith">
+          <h3>Built on the work of</h3>
+          <div class="credits">
+            <a class="credit" href="https://github.com/azahar-emu/azahar"><span class="mono" style="--mono:#c2410c">Az</span><div><b>Azahar</b><span>The 3DS emulator at its core</span></div></a>
+            <a class="credit" href="https://github.com/PalindromicBreadLoaf/dekopon"><span class="mono" style="--mono:#b45309">De</span><div><b>Dekopon</b><span>Azahar for Switch, by PalindromicBreadLoaf</span></div></a>
+            <a class="credit" href="https://github.com/PalindromicBreadLoaf/nxvk"><span class="mono" style="--mono:#4338ca">NX</span><div><b>NXVK</b><span>The Vulkan driver</span></div></a>
+            <a class="credit" href="https://github.com/PalindromicBreadLoaf/ARMSX2-NX"><span class="mono" style="--mono:#0369a1">P2</span><div><b>ARMSX2-NX</b><span>PlayStation 2</span></div></a>
+            <a class="credit" href="https://github.com/NaGaa95/Cemu-nx"><span class="mono" style="--mono:#0f766e">Ce</span><div><b>Cemu-nx</b><span>Wii U</span></div></a>
+            <a class="credit" href="https://www.retroarch.com/"><span class="mono" style="--mono:#6d28d9">RA</span><div><b>RetroArch</b><span>DeSmuME, Gambatte, mGBA, Nestopia, Snes9x, Mupen64Plus-Next, PCSX ReARMed, PPSSPP</span></div></a>
+            <a class="credit" href="https://github.com/PancakeTAS/lsfg-vk"><span class="mono" style="--mono:#be185d">LS</span><div><b>lsfg-vk</b><span>Frame generation</span></div></a>
+          </div>
+        </div>
+      </div>
     </div>
   </section>
 
   <section id="legal">
     <div class="wrap">
-      <div class="section-head">
-        <h2>Legal</h2>
-      </div>
-      <div class="legal">
+      <div class="panel legal">
+        <h2 style="font-size: clamp(26px, 3vw, 34px); margin-bottom: 14px;">Legal</h2>
         <p>EmuSwitch is a legal emulator, we do not distribute any illegal ROMS and we do not condone piracy, all ROMS used for testing are ROMS that we have used from our own games.</p>
-        <p>EmuSwitch is not affiliated with or endorsed by Nintendo or Sony. All trademarks belong to their owners.</p>
+        <p>EmuSwitch is still in testing and doesn't fully work yet. Expect bugs, crashes and games that don't run properly.</p>
       </div>
     </div>
   </section>
 
-  <section id="credits">
+  <section>
     <div class="wrap">
-      <div class="section-head">
-        <h2>Credits</h2>
-        <p>EmuSwitch is open source under GPL-2.0-or-later, like the projects it builds on. Builds with frame generation are GPL-3.0-or-later. The bundled emulators keep their own licenses.</p>
+      <div class="cta">
+        <div>
+          <h2>Ready to play on your Switch?</h2>
+          <p>Grab the latest release, put your games on the SD card, and you're set.</p>
+        </div>
+        <div class="actions">
+          <a class="btn coral" href="https://github.com/ad3333m/dekopon/releases/latest/download/EmuSwitch.nro">Download EmuSwitch</a>
+          <a class="btn" href="https://github.com/ad3333m/dekopon">Source on GitHub</a>
+        </div>
       </div>
-      <ul class="credits">
-        <li><strong><a href="https://github.com/azahar-emu/azahar">Azahar</a></strong>: the 3DS emulator at its core</li>
-        <li><strong><a href="https://github.com/PalindromicBreadLoaf/dekopon">Dekopon</a></strong> by PalindromicBreadLoaf: Azahar for the Switch, which EmuSwitch is a fork of</li>
-        <li><strong><a href="https://github.com/PalindromicBreadLoaf/nxvk">NXVK</a></strong>: the Vulkan driver</li>
-        <li><strong><a href="https://github.com/PalindromicBreadLoaf/ARMSX2-NX">ARMSX2-NX</a></strong>: PlayStation 2</li>
-        <li><strong><a href="https://github.com/NaGaa95/Cemu-nx">Cemu-nx</a></strong>: Wii U</li>
-        <li><strong><a href="https://www.retroarch.com/">RetroArch</a></strong> with DeSmuME, Gambatte, mGBA, Nestopia, Snes9x, Mupen64Plus-Next, PCSX ReARMed and PPSSPP</li>
-        <li><strong><a href="https://github.com/PancakeTAS/lsfg-vk">lsfg-vk</a></strong>: frame generation</li>
-      </ul>
     </div>
   </section>
 </main>
 
 <footer>
   <div class="wrap">
-    <span>EmuSwitch is still in testing.</span>
-    <span><a href="https://github.com/ad3333m/dekopon">GitHub</a> · <a href="https://github.com/ad3333m/dekopon/releases">Releases</a></span>
+    <div class="foot">
+      <div class="foot-top">
+        <div>
+          <a class="brand" href="#top"><img src="assets/icon.jpg" alt="" width="34" height="34">EmuSwitch</a>
+          <p>EmuSwitch brings your games together on the Switch: the 3DS built in, and ten more consoles from the same menu.</p>
+        </div>
+        <div>
+          <h4>PROJECT</h4>
+          <ul>
+            <li><a href="https://github.com/ad3333m/dekopon/releases/latest/download/EmuSwitch.nro">Download</a></li>
+            <li><a href="#how">How it works</a></li>
+            <li><a href="#consoles">Consoles</a></li>
+            <li><a href="#team">Team</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>HELP</h4>
+          <ul>
+            <li><a href="#install">Install guide</a></li>
+            <li><a href="https://github.com/ad3333m/dekopon/releases">All releases</a></li>
+            <li><a href="https://github.com/ad3333m/dekopon#readme">Read me</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>SOURCE</h4>
+          <ul>
+            <li><a href="https://github.com/ad3333m/dekopon">GitHub</a></li>
+            <li><a href="https://github.com/ad3333m/dekopon/blob/master/license.txt">License (GPL)</a></li>
+            <li><a href="https://github.com/ad3333m/dekopon/blob/master/THIRD_PARTY_NOTICES.md">Third-party notices</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="foot-bottom">
+        <div>
+          <div class="copy">© 2026 EMUSWITCH</div>
+          <small>Independent community project, not affiliated with Nintendo or Sony. "Nintendo Switch", "Nintendo 3DS", "PlayStation" and the other console names belong to their respective owners. No games or ROMs are provided.</small>
+        </div>
+        <div class="follow">FOLLOW EMUSWITCH
+          <a href="https://github.com/ad3333m/dekopon" aria-label="EmuSwitch on GitHub"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.5 9.5 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/></svg></a>
+        </div>
+      </div>
+    </div>
   </div>
 </footer>
 
+<script>
+  // The newest release's version under the console count, straight from GitHub. Left empty if
+  // GitHub can't be reached.
+  fetch("https://api.github.com/repos/ad3333m/dekopon/releases/latest")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((r) => {
+      if (r && r.tag_name) {
+        document.getElementById("latest").textContent = "Latest release: " + r.tag_name;
+      }
+    })
+    .catch(() => {});
+</script>
 </body>
 </html>

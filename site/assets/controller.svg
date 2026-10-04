@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 152" role="img" aria-label="EmuSwitch controller">
+  <defs>
+    <linearGradient id="es-body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34363f"/>
+      <stop offset="1" stop-color="#1b1c22"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#es-body)" d="M52 14 H168 C196 14 208 32 210 58 L212 112 C213 134 200 148 182 146 C168 144 160 134 154 122 C147 108 138 99 124 99 H96 C82 99 73 108 66 122 C60 134 52 144 38 146 C20 148 7 134 8 112 L10 58 C12 32 24 14 52 14 Z"/>
+  <rect x="53.5" y="34" width="13" height="36" rx="3" fill="#f4f4f8"/>
+  <rect x="42" y="45.5" width="36" height="13" rx="3" fill="#f4f4f8"/>
+  <rect x="93" y="48.5" width="13" height="7" rx="3.5" fill="#7d8090"/>
+  <rect x="112" y="48.5" width="13" height="7" rx="3.5" fill="#7d8090"/>
+  <circle cx="166" cy="37" r="9" fill="#3b82f6"/>
+  <circle cx="181" cy="52" r="9" fill="#ef4444"/>
+  <circle cx="166" cy="67" r="9" fill="#22c55e"/>
+  <circle cx="151" cy="52" r="9" fill="#f59e0b"/>
+  <g fill="#fff" fill-opacity=".55">
+    <circle cx="163.5" cy="34.5" r="2.4"/><circle cx="178.5" cy="49.5" r="2.4"/>
+    <circle cx="163.5" cy="64.5" r="2.4"/><circle cx="148.5" cy="49.5" r="2.4"/>
+  </g>
+</svg>
