@@ -40,4 +40,11 @@ jobs:
         run: npx --yes wrangler@3 pages project create emuswitch --production-branch=main || true
       - name: Deploy
         if: steps.secrets.outputs.ready == 'true'
-        run: npx --yes wrangler@3 pages deploy site --project-name=emuswitch --branch=main --commit-dirty=true
+        # To the branch the project serves at emuswitch.pages.dev. A deployment to any other
+        # branch only shows up at <branch>.emuswitch.pages.dev.
+        run: |
+          branch=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/emuswitch" \
+            | jq -r '.result.production_branch')
+          echo "Production branch: $branch"
+          npx --yes wrangler@3 pages deploy site --project-name=emuswitch --branch="$branch" --commit-dirty=true
