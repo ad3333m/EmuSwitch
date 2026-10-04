@@ -1,0 +1,43 @@
+name: site
+
+# Publishes site/ to Cloudflare Pages as the "emuswitch" project (emuswitch.pages.dev).
+# Needs two repository secrets: CLOUDFLARE_API_TOKEN (a token with Account > Cloudflare Pages >
+# Edit) and CLOUDFLARE_ACCOUNT_ID. Without them the run only says so.
+
+on:
+  push:
+    branches: [ "master", "claude/trusting-edison-rms5nx" ]
+    paths: [ "site/**", ".github/workflows/site.yml" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check for the Cloudflare secrets
+        id: secrets
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Add the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repository secrets to publish the site."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create the Pages project
+        if: steps.secrets.outputs.ready == 'true'
+        # Fails harmlessly once the project exists.
+        run: npx --yes wrangler@3 pages project create emuswitch --production-branch=main || true
+      - name: Deploy
+        if: steps.secrets.outputs.ready == 'true'
+        run: npx --yes wrangler@3 pages deploy site --project-name=emuswitch --branch=main --commit-dirty=true
