@@ -825,6 +825,9 @@ bool ArticDisconnected() {
 }
 
 void StopRom() {
+    // Each step of closing a game is logged, so a log from a close that never reaches the
+    // library shows which step it stopped at.
+    LOG_INFO(Frontend, "Closing the game");
     if (!s_stop && s_emu_thread.joinable()) {
         // The picture fades to black before the renderer goes, rather than cutting. Paused or
         // not, the emulation thread keeps presenting frames meanwhile.
@@ -837,6 +840,7 @@ void StopRom() {
     if (s_emu_thread.joinable()) {
         s_emu_thread.join();
     }
+    LOG_INFO(Frontend, "Emulation thread stopped");
     // Tear the core down after the window context current.
     auto* window = GetEmuWindow();
     if (window) {
@@ -847,6 +851,7 @@ void StopRom() {
     if (system.IsPoweredOn()) {
         system.Shutdown();
     }
+    LOG_INFO(Frontend, "Emulated system shut down");
     system.EjectCartridge();
     ClearPerGameConfig();
     VideoCore::SetOverlayFade(0.0f);

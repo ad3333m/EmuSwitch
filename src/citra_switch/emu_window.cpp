@@ -367,6 +367,7 @@ void ClearFrame() {
 
 void DestroyWindow() {
     s_window.reset();
+    LOG_INFO(Frontend, "Render window destroyed");
 }
 
 } // namespace SwitchFrontend

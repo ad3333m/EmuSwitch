@@ -163,6 +163,11 @@ void RenderToFramebuffer(Canvas& canvas, Framebuffer& fb, const std::function<vo
     Skin::EndWarmup();
     u32 stride = 0;
     auto* fb_base = static_cast<u8*>(framebufferBegin(&fb, &stride));
+    if (fb_base == nullptr) {
+        // The framebuffer was never created (see Menu::EnsureFramebuffer): skip the frame
+        // rather than write through a null pointer.
+        return;
+    }
     const int h = canvas.Height();
     const int rotation = g_rotation;
     Workers::Get().Run(kBands, [&](int i) {
@@ -3540,6 +3545,9 @@ private:
     // in bands across the cores, each band going straight into the framebuffer.
     void RenderFrame(const std::function<void(Canvas&)>& scene) {
         EnsureFramebuffer();
+        if (!fb_ready) {
+            return;
+        }
         const float cover = MenuFadeCover();
         if (cover <= 0.0f) {
             RenderToFramebuffer(canvas, fb, scene);
@@ -5413,9 +5421,20 @@ private:
             fb_ready = true;
             return;
         }
+        // A game's swapchain that wasn't torn down completely leaves its buffers on the window,
+        // and then the window takes no new ones, so whatever is there is released first. If the
+        // framebuffer still can't be made, the frame is skipped and this runs again next frame.
+        NWindow* window = nwindowGetDefault();
+        nwindowReleaseBuffers(window);
         // Three buffers so a slow frame never stalls on the display; drawn straight into
         // their block-linear layout by RenderFrame().
-        framebufferCreate(&fb, nwindowGetDefault(), kPanelW, kPanelH, PIXEL_FORMAT_RGBA_8888, 3);
+        const Result rc =
+            framebufferCreate(&fb, window, kPanelW, kPanelH, PIXEL_FORMAT_RGBA_8888, 3);
+        if (R_FAILED(rc)) {
+            std::printf("Menu framebuffer creation failed: 0x%x\n", static_cast<unsigned>(rc));
+            fb = Framebuffer{};
+            return;
+        }
         fb_ready = true;
     }
 
@@ -5506,7 +5525,11 @@ void ShowStartupScreen(std::string_view status) {
     }
     ApplyMenuTheme();
     if (!g_splash_fb_ready) {
-        framebufferCreate(&g_splash_fb, nwindowGetDefault(), kPanelW, kPanelH, PIXEL_FORMAT_RGBA_8888, 3);
+        if (R_FAILED(framebufferCreate(&g_splash_fb, nwindowGetDefault(), kPanelW, kPanelH,
+                                       PIXEL_FORMAT_RGBA_8888, 3))) {
+            g_splash_fb = Framebuffer{};
+            return;
+        }
         g_splash_fb_ready = true;
     }
     g_rotation = GetMenuRotation();
