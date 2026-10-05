@@ -157,6 +157,9 @@ private:
 
     Pica::Shader::Profile profile{};
     vk::UniquePipelineCache driver_pipeline_cache;
+    /// What the driver pipeline cache held when it was read from disk: an unchanged cache
+    /// isn't written back.
+    std::size_t loaded_driver_cache_size{};
     vk::UniquePipelineLayout pipeline_layout;
     std::size_t num_worker_threads;
     const bool async_shader_compilation;

@@ -5462,7 +5462,9 @@ private:
         RenderFrame([&](Canvas& c) { DrawStartupScene(c, "Finding your games..."); });
     }
 
-    // Reads the library on a worker while the loading screen keeps moving.
+    // Reads the library on a worker while the loading screen keeps moving. Back from a game the
+    // screen stays black instead, the way the game faded out, and the library fades in once it's
+    // read: the loading screen coming up for a moment in between looked like a flash.
     void LoadLibrary() {
         std::vector<GameEntry> scanned;
         std::atomic<bool> finished{false};
@@ -5470,8 +5472,15 @@ private:
             scanned = ScanGames();
             finished = true;
         });
+        const bool after_game = g_menu_fade_start == kMenuFadeArmed;
+        bool black_shown = false;
         while (!finished.load() && appletMainLoop()) {
-            DrawLoading();
+            if (!after_game) {
+                DrawLoading();
+            } else if (!black_shown && fb_ready) {
+                PresentBlack(fb);
+                black_shown = true;
+            }
             // Leave the scan most of the CPU; the spinner doesn't need every frame.
             svcSleepThread(10'000'000);
         }

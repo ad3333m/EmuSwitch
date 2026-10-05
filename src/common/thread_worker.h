@@ -128,6 +128,19 @@ public:
         condition.notify_one();
     }
 
+    // Forgets the requests no worker has started yet, so WaitForRequests() only waits for the
+    // ones already running. Returns how many were dropped.
+    std::size_t DropPendingRequests() {
+        std::queue<Task> dropped;
+        {
+            std::unique_lock lock{queue_mutex};
+            dropped.swap(requests);
+            work_done += dropped.size();
+        }
+        wait_condition.notify_all();
+        return dropped.size();
+    }
+
     void WaitForRequests(std::stop_token stop_token = {}) {
         std::stop_callback callback(stop_token, [this] {
             for (auto& thread : threads) {

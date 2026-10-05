@@ -13,6 +13,7 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/loader/loader.h"
+#include "video_core/overlay.h"
 #include "video_core/pica/shader_setup.h"
 #include "video_core/renderer_vulkan/pica_to_vk.h"
 #include "video_core/renderer_vulkan/vk_descriptor_update_queue.h"
@@ -175,6 +176,15 @@ void PipelineCache::BuildLayout() {
 }
 
 PipelineCache::~PipelineCache() {
+    // Pipelines still queued to be built would only be thrown away with the renderer, and building
+    // them all first could hold a closing game on a black screen for many seconds. The builds
+    // already running are finished, since they point into this cache, and so are the shaders they
+    // may be waiting on.
+    const std::size_t dropped = pipeline_workers.DropPendingRequests();
+    if (dropped != 0) {
+        VideoCore::NotifyShaderCompileEnd(static_cast<u32>(dropped));
+        LOG_INFO(Render_Vulkan, "Skipped {} queued pipeline builds", dropped);
+    }
     WaitForCompileWorkers();
     SaveDriverPipelineDiskCache();
 }
@@ -241,6 +251,7 @@ void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loadi
 void PipelineCache::LoadDriverPipelineDiskCache(
     const std::atomic_bool& stop_loading, const VideoCore::DiskResourceLoadCallback& callback) {
     vk::PipelineCacheCreateInfo cache_info{};
+    loaded_driver_cache_size = 0;
 
     if (callback) {
         callback(VideoCore::LoadCallbackStage::Build, 0, 1, "Driver Pipeline Cache");
@@ -256,6 +267,7 @@ void PipelineCache::LoadDriverPipelineDiskCache(
                 // Fall back to empty cache
                 cache_info.initialDataSize = 0;
                 cache_info.pInitialData = nullptr;
+                loaded_driver_cache_size = 0;
                 try {
                     driver_pipeline_cache = device.createPipelineCacheUnique(cache_info);
                 } catch (const vk::SystemError& err) {
@@ -314,6 +326,7 @@ void PipelineCache::LoadDriverPipelineDiskCache(
 
     cache_info.initialDataSize = cache_file_size;
     cache_info.pInitialData = cache_data.data();
+    loaded_driver_cache_size = cache_file_size;
     load_cache(true);
 }
 
@@ -332,14 +345,21 @@ void PipelineCache::SaveDriverPipelineDiskCache() {
     const auto cache_file_path =
         fmt::format("{}{:016X}-{:X}{:X}.bin", cache_dir, program_id, vendor_id, device_id);
 
+    // Read before the file is opened, which empties it. Nothing new was built if the size didn't
+    // change (a pipeline cache only gains entries), and rewriting it would only slow down
+    // closing the game.
+    const vk::Device device = instance.GetDevice();
+    const auto cache_data = device.getPipelineCacheData(*driver_pipeline_cache);
+    if (cache_data.size() == loaded_driver_cache_size) {
+        return;
+    }
+
     FileUtil::IOFile cache_file{cache_file_path, "wb"};
     if (!cache_file.IsOpen()) {
         LOG_ERROR(Render_Vulkan, "Unable to open pipeline cache for writing");
         return;
     }
 
-    const vk::Device device = instance.GetDevice();
-    const auto cache_data = device.getPipelineCacheData(*driver_pipeline_cache);
     if (cache_file.WriteBytes(cache_data.data(), cache_data.size()) != cache_data.size()) {
         LOG_ERROR(Render_Vulkan, "Error during pipeline cache write");
         return;

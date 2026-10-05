@@ -825,6 +825,9 @@ bool ArticDisconnected() {
 }
 
 void StopRom() {
+    // Tearing the core down is CPU work, done while the screen is black: at the boosted clock,
+    // like loading.
+    const Common::Horizon::CpuBoostScope boost;
     // Each step of closing a game is logged, so a log from a close that never reaches the
     // library shows which step it stopped at.
     LOG_INFO(Frontend, "Closing the game");

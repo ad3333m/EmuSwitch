@@ -67,9 +67,9 @@ OverlayMenuState GetOverlayMenuState();
 // Skip the copy above when nothing is shown.
 bool IsOverlayMenuVisible();
 
-// Shader-compilation activity.
+// Shader-compilation activity. End takes a count for compiles abandoned together.
 void NotifyShaderCompileBegin();
-void NotifyShaderCompileEnd();
+void NotifyShaderCompileEnd(u32 count = 1);
 u32 GetPendingShaderCompiles();
 
 // A short-lived message shown over the game, used to report things the player asked for.

@@ -103,8 +103,8 @@ void NotifyShaderCompileBegin() {
     s_pending_shader_compiles.fetch_add(1, std::memory_order_acq_rel);
 }
 
-void NotifyShaderCompileEnd() {
-    s_pending_shader_compiles.fetch_sub(1, std::memory_order_acq_rel);
+void NotifyShaderCompileEnd(u32 count) {
+    s_pending_shader_compiles.fetch_sub(count, std::memory_order_acq_rel);
 }
 
 u32 GetPendingShaderCompiles() {
