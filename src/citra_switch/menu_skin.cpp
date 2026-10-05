@@ -471,14 +471,6 @@ void DrawIcon(Canvas& c, DockIconShape shape, float cx, float cy, int size, u32 
     }
 }
 
-void Chip(Canvas& c, const Fonts& f, int right, int bottom, std::string_view text, u32 color) {
-    const int w = f.bold->Measure(text, 11) + 14;
-    const int x = right - w, y = bottom - 20;
-    c.FillRoundAA(x, y, w, 20, 10, WithAlpha(Canvas::Mix(color, kBlack, 0.12f), 0xEE));
-    c.RingRoundAA(x, y, w, 20, 10, 1.0f, White(0x30));
-    f.bold->Draw(c, x + 7, CenterBaseline(y, 20, 11), text, 11, kWhite);
-}
-
 constexpr int kDockStep = 86;
 int DockW(int n) { return n * kDockStep + 32; }
 int DockX(int n) { return (g_screen_w - DockW(n)) / 2; }
@@ -1197,7 +1189,6 @@ void DrawTile(Canvas& c, const Fonts& f, const TileInfo& t, int x, int y, const 
         }
     }
 
-    if (!t.system_badge.empty()) Chip(c, f, tx + s - 8, ty + s - 8, t.system_badge, t.system_color);
     int chip_x = tx + 8;
     for (std::string_view tag : t.tags) {
         const int cw = f.bold->Measure(tag, 11) + 12;

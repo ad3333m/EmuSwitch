@@ -49,7 +49,9 @@ Dekopon: they have nothing to do with it.
   libretro thumbnail library while you're online. You can also pick your own pictures from the SD
   card or from SteamGridDB (add your API key in Settings > Advanced).
 - **Systems** shows each console and its games. Press `+` on a console to move it.
-- Press `+` on a game for **Move Placement**, **Info** and **Delete**.
+- Press `+` on a game for **Move Placement**, **Info** and **Delete**. Move Placement can also
+  list a game under another console (the D-pad past its section, or `L`/`R`). It still opens in
+  its own emulator.
 - **42 themes** under Settings > Themes. They colour the menus and the in-game quick menu.
 - **Settings** show the settings people change most. Press `X` on any page to see every setting,
   or `Y` to search them all.

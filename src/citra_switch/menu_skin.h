@@ -134,7 +134,6 @@ int DockHitTest(const Canvas& c, int item_count, int x, int y);
 // ---- tiles ---------------------------------------------------------------------------------------
 struct TileInfo {
     std::string_view title;
-    std::string_view system_badge;   // "3DS", "GBA", ...
     u32 system_color = MakeColor(0xE2, 0x1B, 0x33);
     const std::vector<u32>* icon{};  // 3DS SMDH icon, or null
     int icon_size{};

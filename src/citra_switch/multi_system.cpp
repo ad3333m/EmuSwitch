@@ -387,6 +387,7 @@ void AddGames(std::vector<GameEntry>& games) {
         e.title = PrettyTitle(name);
         e.file_type = Systems()[s].badge;
         e.system = s;
+        e.shown_system = s;
         games.push_back(std::move(e));
     };
     // Each system's own folder, then anything else under sdmc:/roms by extension.

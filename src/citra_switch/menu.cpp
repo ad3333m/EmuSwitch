@@ -233,7 +233,7 @@ float EaseOut(float t) {
     return 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
 }
 
-// Each system's short badge and colour for tiles and the carousel.
+// Each console's short badge (on its carousel card) and its colour.
 std::string_view SystemBadge(int system) {
     return system >= 0 ? std::string_view{Multi::Systems()[system].badge} : std::string_view{"3DS"};
 }
@@ -554,8 +554,7 @@ void DrawNotice(Canvas& canvas) {
 Skin::TileInfo TileFor(const GameEntry& game) {
     Skin::TileInfo t;
     t.title = game.title;
-    t.system_badge = SystemBadge(game.system);
-    t.system_color = SystemColor(game.system);
+    t.system_color = SystemColor(game.shown_system);
     t.art_key = game.path;
     if (!game.icon.empty()) {
         t.icon = &game.icon;
@@ -924,6 +923,7 @@ public:
         pad_state = &pad;
         LoadSystemOrder();
         LoadGameOrder();
+        LoadGameConsoles();
         EnsureFramebuffer();
         ApplyRotation();
         // The loading screen keeps moving while the library is read.
@@ -1271,7 +1271,9 @@ private:
     bool info_card_notes_pending = false;
 
     void Rescan() {
+        DropGameMove();
         games = ScanGames();
+        ApplyGameConsoles();
         Art::LoadGameArt(games);
         paths = GetPaths();
         RefreshRomsDir2Presence();
@@ -1514,8 +1516,8 @@ private:
         // Grouped by console in the player's order; within each, the games in the player's
         // order (Move Placement), then the rest by title.
         std::stable_sort(filtered.begin(), filtered.end(), [this](int a, int b) {
-            const int sa = SystemRank(games[static_cast<std::size_t>(a)].system);
-            const int sb = SystemRank(games[static_cast<std::size_t>(b)].system);
+            const int sa = SystemRank(games[static_cast<std::size_t>(a)].shown_system);
+            const int sb = SystemRank(games[static_cast<std::size_t>(b)].shown_system);
             return sa != sb ? sa < sb : GameRank(a) < GameRank(b);
         });
         selected = std::clamp(selected, 0, std::max(0, static_cast<int>(filtered.size()) - 1));
@@ -1547,9 +1549,11 @@ private:
         const int n = static_cast<int>(filtered.size());
         float y = 0.0f;
         for (int i = 0; i < n;) {
-            const int sys = games[static_cast<std::size_t>(filtered[static_cast<std::size_t>(i)])].system;
+            const int sys =
+                games[static_cast<std::size_t>(filtered[static_cast<std::size_t>(i)])].shown_system;
             int j = i;
-            while (j < n && games[static_cast<std::size_t>(filtered[static_cast<std::size_t>(j)])].system == sys) {
+            while (j < n && games[static_cast<std::size_t>(filtered[static_cast<std::size_t>(j)])]
+                                    .shown_system == sys) {
                 ++j;
             }
             home_sections.push_back({sys, i, j - i, y});
@@ -3373,7 +3377,7 @@ private:
                 const GameEntry& game = games[filtered[static_cast<std::size_t>(selected)]];
                 title = game.title;
                 sub = game_moving ? std::string{"Moving: use the arrows, then A"}
-                                  : std::string{SystemName(game.system)};
+                                  : std::string{SystemName(game.shown_system)};
             } else {
                 title = g_nickname;
                 sub = std::to_string(filtered.size()) + (filtered.size() == 1 ? " game" : " games");
@@ -3387,7 +3391,7 @@ private:
                 const GameEntry& game =
                     games[static_cast<std::size_t>(system_games[static_cast<std::size_t>(system_games_sel)])];
                 title = game.title;
-                sub = std::string{SystemName(game.system)};
+                sub = std::string{SystemName(game.shown_system)};
             } else if (system_moving) {
                 sub = "Moving " + Art::Systems()[static_cast<std::size_t>(SystemRowAt(systems_sel))].name;
             } else {
@@ -3886,6 +3890,7 @@ private:
             int hx = HintX();
             const int hy = g_screen_h - 44;
             hx += DrawHint(c, hx, hy, "D-Pad", "Move") + 22;
+            hx += DrawHint(c, hx, hy, "L R", "Console") + 22;
             hx += DrawHint(c, hx, hy, "A", "Done") + 22;
             DrawHint(c, hx, hy, "B", "Cancel");
         } else {
@@ -4009,15 +4014,23 @@ private:
     GameMenu game_menu = GameMenu::None;
     int game_menu_sel = 0;
     float game_menu_anim = 0.0f;
-    // Carrying a game to a new place in its console's section.
+    // Carrying a game to a new place: in its console's section, or under another console.
     bool game_moving = false;
     std::vector<int> game_move_before; // `filtered` before the move
     int game_move_selected_before = 0;
+    int game_move_game = -1;          // the carried game, an index into `games`
+    int game_move_system_before = -1; // the console it was listed under
+    // Whether the question about moving it to another console is up.
+    bool game_move_asking = false;
     // The player's order of the games: path -> place. Games it doesn't list go after, by title.
     std::unordered_map<std::string, int> game_rank;
+    // Games the player listed under another console: path -> that console (a Multi::Systems()
+    // index, -1 for the 3DS). Only for show: they still open in their own emulator.
+    std::unordered_map<std::string, int> game_console;
 
     static constexpr int kGameMenuRowStep = 58;
     static constexpr const char* kGameOrderPath = "sdmc:/switch/emuswitch/game_order.txt";
+    static constexpr const char* kGameConsolesPath = "sdmc:/switch/emuswitch/game_consoles.txt";
 
     int GameRank(int game) const {
         const auto it = game_rank.find(games[static_cast<std::size_t>(game)].path);
@@ -4086,6 +4099,70 @@ private:
             std::rename(tmp.c_str(), kGameOrderPath);
         } else {
             std::remove(tmp.c_str());
+        }
+    }
+
+    // One line per game listed under another console: the console's id (as on the Systems page),
+    // a tab, then the game's path.
+    void LoadGameConsoles() {
+        game_console.clear();
+        FILE* f = std::fopen(kGameConsolesPath, "rb");
+        if (!f) {
+            return;
+        }
+        const auto& systems = Art::Systems();
+        char buf[1100];
+        while (std::fgets(buf, sizeof(buf), f)) {
+            std::string line = buf;
+            while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+                line.pop_back();
+            }
+            const std::size_t tab = line.find('\t');
+            if (tab == std::string::npos || tab + 1 == line.size()) {
+                continue;
+            }
+            // A console EmuSwitch no longer has puts the game back under its own.
+            for (std::size_t row = 0; row < systems.size(); ++row) {
+                if (line.compare(0, tab, systems[row].id) == 0) {
+                    game_console[line.substr(tab + 1)] = SystemIndexFor(static_cast<int>(row));
+                    break;
+                }
+            }
+        }
+        std::fclose(f);
+    }
+
+    void SaveGameConsoles() {
+        const auto& systems = Art::Systems();
+        std::string text;
+        for (const auto& [path, system] : game_console) {
+            text += systems[static_cast<std::size_t>(system + 1)].id;
+            text += '\t';
+            text += path;
+            text += '\n';
+        }
+        mkdir("sdmc:/switch", 0777);
+        mkdir("sdmc:/switch/emuswitch", 0777);
+        const std::string tmp = std::string{kGameConsolesPath} + ".part";
+        FILE* f = std::fopen(tmp.c_str(), "wb");
+        if (!f) {
+            return;
+        }
+        const bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+        std::fclose(f);
+        if (ok) {
+            std::remove(kGameConsolesPath);
+            std::rename(tmp.c_str(), kGameConsolesPath);
+        } else {
+            std::remove(tmp.c_str());
+        }
+    }
+
+    // Lists each game under the console the player moved it to, if they did.
+    void ApplyGameConsoles() {
+        for (GameEntry& game : games) {
+            const auto it = game_console.find(game.path);
+            game.shown_system = it != game_console.end() ? it->second : game.system;
         }
     }
 
@@ -4175,6 +4252,9 @@ private:
             SetInsertedCartridge("");
         }
         const bool had_rank = game_rank.erase(game.path) > 0;
+        if (game_console.erase(game.path) > 0) {
+            SaveGameConsoles();
+        }
         const int keep = selected;
         Rescan();
         selected = filtered.empty() ? 0 : std::min(keep, static_cast<int>(filtered.size()) - 1);
@@ -4220,10 +4300,13 @@ private:
         }
         game_move_before = filtered;
         game_move_selected_before = selected;
+        game_move_game = filtered[static_cast<std::size_t>(selected)];
+        game_move_system_before = games[static_cast<std::size_t>(game_move_game)].shown_system;
         game_moving = true;
     }
 
-    // Whether the carried game can still go left, right, up or down in its section.
+    // Whether the carried game can still go left, right, up or down: in its section, and up or
+    // down into the consoles above and below.
     void GameMoveRoom(bool& left, bool& right, bool& up, bool& down) const {
         left = right = up = down = false;
         const HomeSection* section = SectionAt(selected);
@@ -4233,8 +4316,9 @@ private:
         const int at = selected - section->first;
         left = at > 0;
         right = at < section->count - 1;
-        up = at / home_cols > 0;
-        down = at / home_cols < (section->count - 1) / home_cols;
+        up = at / home_cols > 0 || section != &home_sections.front();
+        down =
+            at / home_cols < (section->count - 1) / home_cols || section != &home_sections.back();
     }
 
     void MoveGameTo(int target) {
@@ -4252,19 +4336,71 @@ private:
         lift_prev_index = -1;
     }
 
+    // Lists the carried game under `system` instead, at the start or the end of that console's
+    // section (made for it when the console had no games).
+    void MoveGameToConsole(int system, bool at_end) {
+        const int carried = filtered[static_cast<std::size_t>(selected)];
+        games[static_cast<std::size_t>(carried)].shown_system = system;
+        filtered.erase(filtered.begin() + selected);
+        // `filtered` is grouped by console, in the Systems page's order.
+        const int rank = SystemRank(system);
+        int at = 0;
+        const int n = static_cast<int>(filtered.size());
+        while (at < n) {
+            const int r =
+                SystemRank(games[static_cast<std::size_t>(filtered[static_cast<std::size_t>(at)])]
+                               .shown_system);
+            if (at_end ? r > rank : r >= rank) {
+                break;
+            }
+            ++at;
+        }
+        filtered.insert(filtered.begin() + at, carried);
+        selected = at;
+        BuildHomeLayout();
+        lift_index = selected;
+        lift_prev_index = -1;
+    }
+
+    // To the next (+1) or previous (-1) console in the Systems page's order, games or not.
+    void StepGameConsole(int dir) {
+        const int carried = filtered[static_cast<std::size_t>(selected)];
+        const int rank = SystemRank(games[static_cast<std::size_t>(carried)].shown_system) + dir;
+        if (rank < 0 || rank >= static_cast<int>(system_order.size())) {
+            return;
+        }
+        MoveGameToConsole(SystemIndexFor(system_order[static_cast<std::size_t>(rank)]), dir < 0);
+    }
+
     void HandleGameMove(u64 down, u32 nav) {
-        bool left, right, up, dn;
-        GameMoveRoom(left, right, up, dn);
-        const HomeSection* section = SectionAt(selected);
-        if ((nav & DirLeft) && left) {
-            MoveGameTo(selected - 1);
-        } else if ((nav & DirRight) && right) {
-            MoveGameTo(selected + 1);
-        } else if ((nav & DirUp) && up) {
-            MoveGameTo(selected - home_cols);
-        } else if ((nav & DirDown) && dn && section) {
-            // Into a shorter last row, the carried game goes to its end.
-            MoveGameTo(std::min(selected + home_cols, section->first + section->count - 1));
+        if (const HomeSection* section = SectionAt(selected); section && home_cols > 0) {
+            const int at = selected - section->first;
+            const int last = section->first + section->count - 1;
+            const std::size_t index = static_cast<std::size_t>(section - home_sections.data());
+            if ((nav & DirLeft) && at > 0) {
+                MoveGameTo(selected - 1);
+            } else if ((nav & DirRight) && selected < last) {
+                MoveGameTo(selected + 1);
+            } else if (nav & DirUp) {
+                if (at / home_cols > 0) {
+                    MoveGameTo(selected - home_cols);
+                } else if (index > 0) {
+                    // Off the top of its section: to the end of the console above.
+                    MoveGameToConsole(home_sections[index - 1].system, true);
+                }
+            } else if (nav & DirDown) {
+                if (at / home_cols < (section->count - 1) / home_cols) {
+                    // Into a shorter last row, the carried game goes to its end.
+                    MoveGameTo(std::min(selected + home_cols, last));
+                } else if (index + 1 < home_sections.size()) {
+                    // Off the bottom: to the start of the console below.
+                    MoveGameToConsole(home_sections[index + 1].system, false);
+                }
+            }
+        }
+        // L and R step through every console, ones without games too.
+        if (down & (HidNpadButton_L | HidNpadButton_R)) {
+            StepGameConsole((down & HidNpadButton_R) ? 1 : -1);
         }
         if (down & (HidNpadButton_A | HidNpadButton_Plus)) {
             FinishGameMove();
@@ -4275,19 +4411,62 @@ private:
 
     void FinishGameMove() {
         game_moving = false;
-        if (filtered == game_move_before) {
+        const GameEntry& game = games[static_cast<std::size_t>(game_move_game)];
+        if (game.shown_system != game_move_system_before) {
+            // Listing a game under another console is asked about first; B puts it back.
+            game_move_asking = true;
+            confirm =
+                ConfirmPrompt{"Move to " + std::string{SystemName(game.shown_system)},
+                              {"Do you really want to move this game to a different console?"},
+                              "It still opens in the same emulator.",
+                              "Move",
+                              [this] { CommitGameMove(); },
+                              [this] { CancelGameMove(); }};
             return;
         }
+        if (filtered != game_move_before) {
+            CommitGameMove();
+        }
+    }
+
+    void CommitGameMove() {
+        game_move_asking = false;
+        const GameEntry& game = games[static_cast<std::size_t>(game_move_game)];
+        const bool new_console = game.shown_system != game_move_system_before;
+        if (new_console) {
+            if (game.shown_system == game.system) {
+                game_console.erase(game.path);
+            } else {
+                game_console[game.path] = game.shown_system;
+            }
+            SaveGameConsoles();
+        }
         SaveGameOrder();
-        ShowNotice(games[filtered[static_cast<std::size_t>(selected)]].title + " moved", false);
+        ShowNotice(new_console
+                       ? game.title + " moved to " + std::string{SystemName(game.shown_system)}
+                       : game.title + " moved",
+                   false);
     }
 
     void CancelGameMove() {
+        game_move_asking = false;
+        games[static_cast<std::size_t>(game_move_game)].shown_system = game_move_system_before;
         filtered = game_move_before;
         selected = game_move_selected_before;
+        BuildHomeLayout();
         lift_index = selected;
         lift_prev_index = -1;
         game_moving = false;
+    }
+
+    // The library is about to be read again, which puts every game back where it was saved: a
+    // game being carried, or waiting on the question about its console, is let go.
+    void DropGameMove() {
+        game_moving = false;
+        if (game_move_asking) {
+            game_move_asking = false;
+            confirm.reset();
+        }
     }
 
     Rect GameMenuRect() const {
@@ -4559,7 +4738,7 @@ private:
         const int sys = SystemAt(systems_sel);
         system_games.clear();
         for (int i = 0; i < static_cast<int>(games.size()); ++i) {
-            if (games[static_cast<std::size_t>(i)].system == sys) {
+            if (games[static_cast<std::size_t>(i)].shown_system == sys) {
                 system_games.push_back(i);
             }
         }
@@ -4750,7 +4929,7 @@ private:
         const int sys = SystemIndexFor(row);
         int count = 0;
         for (const GameEntry& g : games) {
-            count += g.system == sys ? 1 : 0;
+            count += g.shown_system == sys ? 1 : 0;
         }
         const std::string detail = count == 0 ? "No games yet" : std::to_string(count) + (count == 1 ? " game" : " games");
         const bool custom = Skin::HasSystemImage(systems[static_cast<std::size_t>(row)].id);
@@ -4852,7 +5031,9 @@ private:
                 const GameEntry& game = games[static_cast<std::size_t>(system_games[static_cast<std::size_t>(i)])];
                 const int y = top + static_cast<int>(std::lround(i * kGameRowStep - scroll));
                 const float focus_k = std::clamp(1.0f - std::fabs(system_games_cursor.x - i), 0.0f, 1.0f);
-                std::string detail = game.publisher.empty() ? std::string{SystemName(game.system)} : game.publisher;
+                std::string detail = game.publisher.empty()
+                                         ? std::string{SystemName(game.shown_system)}
+                                         : game.publisher;
                 if (game.installed) {
                     detail += "  -  Installed";
                 }
@@ -5486,6 +5667,7 @@ private:
         }
         worker.join();
         games = std::move(scanned);
+        ApplyGameConsoles();
         Art::LoadGameArt(games);
         paths = GetPaths();
         RefreshRomsDir2Presence();
