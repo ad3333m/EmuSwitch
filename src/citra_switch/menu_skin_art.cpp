@@ -147,6 +147,27 @@ float IconSdf(DockIconShape shape, V2 p) {
         const float sun = Circle(p, {0.17f, -0.12f}, 0.065f);
         return Union(Cut(frame, inner), Union(std::max(hills, inner), sun));
     }
+    case DockIconShape::Search: {
+        // A lens and its handle.
+        const float lens = std::fabs(Circle(p, {-0.07f, -0.07f}, 0.22f)) - 0.06f;
+        return Union(lens, Capsule(p, {0.11f, 0.11f}, {0.31f, 0.31f}, 0.07f));
+    }
+    case DockIconShape::Palette: {
+        // A painter's palette: a round board with a thumb notch and four dabs of paint cut out.
+        float d = Circle(p, {0.0f, 0.0f}, 0.38f);
+        d = SmoothCut(d, Circle(p, {0.22f, 0.20f}, 0.12f), 0.04f);
+        for (const V2 hole :
+             {V2{-0.17f, -0.15f}, V2{0.04f, -0.22f}, V2{0.21f, -0.06f}, V2{-0.21f, 0.09f}}) {
+            d = Cut(d, Circle(p, hole, 0.065f));
+        }
+        return d;
+    }
+    case DockIconShape::Power: {
+        // A ring open at the top, with a bar through the gap.
+        const float ring = Cut(std::fabs(Circle(p, {0.0f, 0.04f}, 0.29f)) - 0.06f,
+                               Box(p, {0.0f, -0.24f}, 0.13f, 0.16f, 0.0f));
+        return Union(ring, Capsule(p, {0.0f, -0.36f}, {0.0f, -0.02f}, 0.06f));
+    }
     }
     return 1.0f;
 }

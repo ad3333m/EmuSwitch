@@ -18,7 +18,18 @@ using Gfx::MakeColor;
 using Gfx::u32;
 using Gfx::u8;
 
-enum class DockIconShape { Home, Controller, Download, Gear, Folder, Bolt, Picture };
+enum class DockIconShape {
+    Home,
+    Controller,
+    Download,
+    Gear,
+    Folder,
+    Bolt,
+    Picture,
+    Search,
+    Palette,
+    Power
+};
 
 // A `size` x `size` icon mask; built on first use when `may_build`, else null until then.
 std::shared_ptr<const Gfx::Mask> IconMask(DockIconShape shape, int size, bool may_build);

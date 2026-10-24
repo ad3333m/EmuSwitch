@@ -916,6 +916,15 @@ void DrawDock(Canvas& c, const Fonts& f, const std::vector<DockItem>& items, con
         case DockIcon::Install: DrawIcon(c, DockIconShape::Download, cx, iy, size, col); break;
         case DockIcon::Settings: DrawIcon(c, DockIconShape::Gear, cx, iy, size, col); break;
         case DockIcon::Folder: DrawIcon(c, DockIconShape::Folder, cx, iy, size, col); break;
+        case DockIcon::Search:
+            DrawIcon(c, DockIconShape::Search, cx, iy, size, col);
+            break;
+        case DockIcon::Themes:
+            DrawIcon(c, DockIconShape::Palette, cx, iy, size, col);
+            break;
+        case DockIcon::Power:
+            DrawIcon(c, DockIconShape::Power, cx, iy, size, col);
+            break;
         case DockIcon::Text: {
             const char* t = items[i].text ? items[i].text : "?";
             const int ts = 17 + static_cast<int>(2 * near);
@@ -1054,7 +1063,8 @@ void DrawFocusRing(Canvas& c, float x, float y, float w, float t, float alpha) {
     Canvas::FadeScope fade{c, alpha};
     const int ix = static_cast<int>(std::lround(x)) - 6, iy = static_cast<int>(std::lround(y)) - 6;
     const int iw = static_cast<int>(std::lround(w)) + 12;
-    const int r = kTileR + 7;
+    // Matches the corner of the tile inside it, at any size.
+    const int r = kTileR + 7 + std::max(0, (static_cast<int>(std::lround(w)) - kTileFocus) / 8);
     c.RingRoundAAWith(ix, iy, iw, iw, r, 3.2f, [t](float p) { return RingAt(p, t * 0.12f); });
     // A faint outer halo so the ring reads on bright pictures too.
     c.RingRoundAA(ix - 2, iy - 2, iw + 4, iw + 4, r + 2, 2.0f, Black(0x50));
@@ -1137,13 +1147,14 @@ void DrawTile(Canvas& c, const Fonts& f, const TileInfo& t, int x, int y, const 
         return;
     }
     const float lift = look.lift;
-    const float size = kTileW + (kTileFocus - kTileW) * lift;
+    const float size = look.size + (look.focus_size - look.size) * lift;
     const int s = std::max(8, static_cast<int>(std::lround(size)));
-    const float cxf = x + kTileW / 2.0f;
-    const float cyf = y + kTileH / 2.0f - 3.0f * std::max(0.0f, lift) + (1.0f - look.appear) * 26.0f;
+    const float cxf = x + look.size / 2.0f;
+    const float cyf =
+        y + look.size / 2.0f - 3.0f * std::max(0.0f, lift) + (1.0f - look.appear) * 26.0f;
     const int tx = static_cast<int>(std::lround(cxf - s / 2.0f)), ty = static_cast<int>(std::lround(cyf - s / 2.0f));
     const int r = TileRadius(s);
-    const int rest = lift > 0.5f ? kTileFocus : kTileW;
+    const int rest = lift > 0.5f ? look.focus_size : look.size;
     const std::shared_ptr<const Picture> pic = TilePicture(t);
     // Looked up (and, in the warm-up pass, built) even when off this band.
     const std::shared_ptr<const Image> face = TileFace(f, t, pic, rest);
@@ -1673,6 +1684,98 @@ void DrawEmptyLibrary(Canvas& c, const Fonts& f, std::string_view roms_dir, floa
     centred(*f.regular, "Put games in sdmc:/roms/<system>/  (3ds, ds, gba, ps2, n64, snes...)", top + 206, 17, kColTextDim);
     const std::string dir = f.regular->TruncateFront(roms_dir, 17, c.Width() - 120);
     centred(*f.regular, "3DS games can also go in " + dir, top + 232, 17, kColTextDim);
+}
+
+int TileCornerRadius(int s) {
+    return TileRadius(s);
+}
+
+void DrawRoundButton(Canvas& c, const Fonts& f, float cx, float cy, float d, DockIcon icon,
+                     u32 color, std::string_view label, float focus, float t) {
+    const int s = static_cast<int>(std::lround(d));
+    const int x = static_cast<int>(std::lround(cx - d / 2.0f)),
+              y = static_cast<int>(std::lround(cy - d / 2.0f));
+    const float k = std::clamp(focus, 0.0f, 1.0f);
+    c.SoftShadow(x, y, s, s, s / 2, 12, 5, A(0.45f));
+    if (k > 0.02f) {
+        c.Glow(x, y, s, s, s / 2, 24, WithAlpha(color, A(0.5f * k)), true, 6);
+    }
+    Glass(c, x, y, s, s, s / 2, true, 0.85f);
+    const int is = static_cast<int>(d * 0.5f);
+    switch (icon) {
+    case DockIcon::Home:
+        DrawIcon(c, DockIconShape::Home, cx, cy, is, color);
+        break;
+    case DockIcon::Systems:
+        DrawIcon(c, DockIconShape::Controller, cx, cy + 1.0f, is + 6, color);
+        break;
+    case DockIcon::Install:
+        DrawIcon(c, DockIconShape::Download, cx, cy, is, color);
+        break;
+    case DockIcon::Settings:
+        DrawIcon(c, DockIconShape::Gear, cx, cy, is, color);
+        break;
+    case DockIcon::Folder:
+        DrawIcon(c, DockIconShape::Folder, cx, cy, is, color);
+        break;
+    case DockIcon::Search:
+        DrawIcon(c, DockIconShape::Search, cx, cy, is, color);
+        break;
+    case DockIcon::Themes:
+        DrawIcon(c, DockIconShape::Palette, cx, cy, is, color);
+        break;
+    case DockIcon::Power:
+        DrawIcon(c, DockIconShape::Power, cx, cy, is, color);
+        break;
+    case DockIcon::Text: {
+        const int ts = static_cast<int>(d * 0.3f);
+        const int tw = f.bold->Measure(label, ts);
+        f.bold->Draw(c, static_cast<int>(cx) - tw / 2, static_cast<int>(cy + ts * 0.36f), label, ts,
+                     color);
+        break;
+    }
+    }
+    if (k > 0.01f) {
+        Canvas::FadeScope fade{c, k};
+        c.RingRoundAAWith(x - 6, y - 6, s + 12, s + 12, s / 2 + 6, 3.2f,
+                          [t](float p) { return RingAt(p, t * 0.12f); });
+        const int lw = f.bold->Measure(label, 17);
+        f.bold->Draw(c, static_cast<int>(cx) - lw / 2, y + s + 36, label, 17, kColText);
+    }
+}
+
+void DrawConsoleSwitch(Canvas& c, const Fonts& f, const SystemCard& card, std::string_view name,
+                       std::string_view detail, int cx, int y, bool prev, bool next) {
+    constexpr int kLogoH = 38, kKeyW = 34, kKeyH = 26, kGap = 18;
+    const bool has_logo = HasSystemLogo(std::string{card.id});
+    // Measured off-canvas first, so the whole switch can be centred.
+    int mid_w = DrawSystemLogo(c, f, card, -100000, y, has_logo ? kLogoH + 4 : 34);
+    if (!has_logo) {
+        mid_w += 12 + f.bold->Measure(name, 24);
+    }
+    const int total = kKeyW + kGap + mid_w + kGap + kKeyW;
+    int x = cx - total / 2;
+    auto key = [&](int kx, const char* text, bool on) {
+        const int ky = y + (kLogoH - kKeyH) / 2 + 2;
+        c.FillRoundAA(kx, ky, kKeyW, kKeyH, 9, on ? White(0x22) : White(0x0A));
+        c.RingRoundAA(kx, ky, kKeyW, kKeyH, 9, 1.0f, on ? White(0x40) : White(0x16));
+        const int tw = f.bold->Measure(text, 13);
+        f.bold->Draw(c, kx + (kKeyW - tw) / 2, CenterBaseline(ky, kKeyH, 13), text, 13,
+                     on ? kColText : WithAlpha(kColTextDim, 0x60));
+    };
+    key(x, "L", prev);
+    x += kKeyW + kGap;
+    const int lw =
+        DrawSystemLogo(c, f, card, x, y + (has_logo ? 0 : 2), has_logo ? kLogoH + 4 : 34);
+    if (!has_logo) {
+        f.bold->Draw(c, x + lw + 12, CenterBaseline(y + 2, 34, 24), name, 24, kColText);
+    }
+    x += mid_w + kGap;
+    key(x, "R", next);
+    if (!detail.empty()) {
+        const int dw = f.regular->Measure(detail, 15);
+        f.regular->Draw(c, cx - dw / 2, y + kLogoH + 30, detail, 15, kColTextDim);
+    }
 }
 
 } // namespace SwitchFrontend::Skin

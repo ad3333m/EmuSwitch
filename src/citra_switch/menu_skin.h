@@ -113,7 +113,7 @@ struct TopBar {
 void DrawTopBar(Canvas& c, const Fonts& f, const TopBar& bar);
 
 // ---- dock ----------------------------------------------------------------------------------------
-enum class DockIcon { Home, Systems, Install, Settings, Folder, Text };
+enum class DockIcon { Home, Systems, Install, Settings, Folder, Text, Search, Themes, Power };
 struct DockItem {
     const char* label;
     DockIcon icon;
@@ -145,12 +145,16 @@ struct TileLook {
     float appear = 1.0f;  // 0 hidden .. 1 shown: tiles rise and fade in
     float t = 0.0f;       // seconds, for the sheen
     bool dim = false;     // the grid isn't focused
+    int size = Layout::kTileW;           // resting size
+    int focus_size = Layout::kTileFocus; // once it has popped up
 };
 // Draws a tile whose resting top-left is (x, y).
 void DrawTile(Canvas& c, const Fonts& f, const TileInfo& t, int x, int y, const TileLook& look);
 void DrawEmptySlot(Canvas& c, int x, int y, float alpha);
 // The cursor ring around a (w x w) square at (x, y); it glides between tiles.
 void DrawFocusRing(Canvas& c, float x, float y, float w, float t, float alpha);
+// The corner radius of a tile `s` pixels square.
+int TileCornerRadius(int s);
 // One theme on the Themes page: a small picture of the menu in that theme's colours, its name
 // under it, "In use" on the active one and the focus ring around the one the cursor is on.
 void DrawThemeCard(Canvas& c, const Fonts& f, int x, int y, int w, int h, int theme, bool focused,
@@ -237,6 +241,17 @@ void DrawProgress(Canvas& c, int x, int y, int w, int h, float frac, float t);
 void DrawSpinner(Canvas& c, float cx, float cy, float r, float t);
 // A thin vertical scrollbar.
 void DrawScrollbar(Canvas& c, int x, int top, int track_h, int thumb_y, int thumb_h);
+
+// ---- Home's round buttons
+// ------------------------------------------------------------------------------ A round button `d`
+// pixels across centred on (cx, cy), its icon in `color`. `focus` (0..1) rings it and shows `label`
+// under it.
+void DrawRoundButton(Canvas& c, const Fonts& f, float cx, float cy, float d, DockIcon icon,
+                     u32 color, std::string_view label, float focus, float t);
+// The console Home is showing, centred on cx at y: its logo (or name), `detail` under it, and the
+// L and R keys either side when there's a console that way.
+void DrawConsoleSwitch(Canvas& c, const Fonts& f, const SystemCard& card, std::string_view name,
+                       std::string_view detail, int cx, int y, bool prev, bool next);
 
 // ---- small pieces --------------------------------------------------------------------------------------
 int DrawHint(Canvas& c, const Fonts& f, int x, int y, const char* button, const char* label);
