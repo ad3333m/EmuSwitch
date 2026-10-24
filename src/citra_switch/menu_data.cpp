@@ -738,16 +738,32 @@ std::vector<std::string> ScannedCiaFiles() {
 
 std::vector<CiaEntry> CiasToInstall(const std::vector<std::string>& paths) {
     std::vector<CiaEntry> out;
+    LOG_INFO(Frontend, "Found {} CIA file(s) to check", paths.size());
     for (const std::string& path : paths) {
         CiaEntry entry;
         entry.name = std::string{FileUtil::GetFilename(path)};
         entry.path = path;
         entry.size = FileUtil::GetSize(path);
         entry.readable = ReadCiaEntry(path, entry);
+        if (!entry.readable) {
+            LOG_WARNING(Frontend, "CIA {} couldn't be read", path);
+            out.push_back(std::move(entry));
+            continue;
+        }
+        // Already on the emulated card, this version or newer. An install cut short (the app
+        // closed, the console slept) can leave the title's TMD without its content: that one is
+        // installed again rather than skipped for good.
         std::uint16_t installed = 0;
-        if (entry.readable && GetInstalledVersion(entry.program_id, installed) &&
-            installed >= entry.version) {
-            continue; // Already on the emulated card, this version or newer.
+        if (GetInstalledVersion(entry.program_id, installed) && installed >= entry.version) {
+            const std::string content = Service::AM::GetTitleContentPath(
+                Service::AM::GetTitleMediaType(entry.program_id), entry.program_id);
+            if (!content.empty() && FileUtil::Exists(content)) {
+                LOG_INFO(Frontend, "CIA {}: {:016X} v{} is already installed", path,
+                         entry.program_id, installed);
+                continue;
+            }
+            LOG_WARNING(Frontend, "CIA {}: {:016X} has a TMD but no content, installing again",
+                        path, entry.program_id);
         }
         out.push_back(std::move(entry));
     }

@@ -1090,6 +1090,13 @@ InstallStatus InstallCIA(const std::string& path,
         std::size_t total_bytes_read = 0;
         while (total_bytes_read != file_size) {
             std::size_t bytes_read = in_file->ReadBytes(buffer.data(), buffer.size());
+            if (bytes_read == 0) {
+                // A read that stops short (the card failing, a cut-off file) would otherwise
+                // spin here for ever.
+                LOG_ERROR(Service_AM, "Reading {} stopped at {} of {} bytes", path,
+                          total_bytes_read, file_size);
+                return InstallStatus::ErrorAborted;
+            }
             auto result = installFile.Write(static_cast<u64>(total_bytes_read), bytes_read, true,
                                             false, static_cast<u8*>(buffer.data()));
 
