@@ -328,7 +328,6 @@ void RunGame(PadState& pad, const std::string& rom) {
         SwitchFrontend::EndRealAmiibo();
         SwitchFrontend::StopRom();
         SwitchFrontend::GameClocks::End();
-        SwitchFrontend::RequestMenuFadeIn();
         if (std::string reason = SwitchFrontend::TakeHaltReason(); !reason.empty()) {
             SwitchFrontend::SetMenuNotice(reason + ", so the game was closed");
         } else if (SwitchFrontend::ArticDisconnected()) {
@@ -352,6 +351,10 @@ void RunGame(PadState& pad, const std::string& rom) {
     // Make sure a lingering overlay never survives into the next game or the library menu.
     SwitchFrontend::CloseQuickMenu();
     SwitchFrontend::DestroyWindow();
+    // Black straight away, before the menu reads its files: nothing else is drawing now. The menu
+    // then fades in from it, even when the game never started.
+    SwitchFrontend::ShowBlackScreen();
+    SwitchFrontend::RequestMenuFadeIn();
 }
 
 } // namespace

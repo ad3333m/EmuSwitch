@@ -760,6 +760,14 @@ void ToggleQuickMenu() {
 
 namespace {
 
+// Closes the menu for a save or a load without the game flashing up bright in between: the
+// picture keeps the menu's dimming, which the save lifts again and the load takes on to black.
+void CloseQuickMenuDimmed() {
+    constexpr float kMenuScrim = 0.62f; // as dark as the renderer's scrim behind the menu
+    VideoCore::SetOverlayFade(kMenuScrim);
+    CloseQuickMenu();
+}
+
 void EnterPage(Page page) {
     s_page = static_cast<int>(page);
     s_selected = 0;
@@ -1016,13 +1024,13 @@ QuickMenuAction UpdateQuickMenu(const QuickMenuNav& nav) {
         const auto slot = static_cast<unsigned int>(s_home_slot);
         if (row.item == Item::SaveHere) {
             if (RequestSaveState(slot)) {
-                CloseQuickMenu();
+                CloseQuickMenuDimmed();
                 return QuickMenuAction::Close;
             }
         } else if (s_slot_status[slot].empty()) {
             VideoCore::PostOverlayToast(SaveStateSlotName(slot) + " is empty");
         } else if (RequestLoadState(slot)) {
-            CloseQuickMenu();
+            CloseQuickMenuDimmed();
             return QuickMenuAction::Close;
         }
         Repaint();
@@ -1034,14 +1042,14 @@ QuickMenuAction UpdateQuickMenu(const QuickMenuNav& nav) {
         const bool occupied = !s_slot_status[slot].empty();
         if (nav.alt) {
             if (RequestSaveState(slot)) {
-                CloseQuickMenu();
+                CloseQuickMenuDimmed();
                 return QuickMenuAction::Close;
             }
         } else if (nav.confirm) {
             if (!occupied) {
                 VideoCore::PostOverlayToast(SaveStateSlotName(slot) + " is empty");
             } else if (RequestLoadState(slot)) {
-                CloseQuickMenu();
+                CloseQuickMenuDimmed();
                 return QuickMenuAction::Close;
             }
         } else if (occupied) {
@@ -1126,7 +1134,8 @@ QuickMenuAction UpdateQuickMenu(const QuickMenuNav& nav) {
             return QuickMenuAction::Close;
         }
         if (row.item == Item::ExitGame) {
-            CloseQuickMenu();
+            // The menu stays up (and the game paused) while the picture fades out under it;
+            // closing it first put the game back on screen, bright, for a moment.
             return QuickMenuAction::ExitGame;
         }
         Activate(row);

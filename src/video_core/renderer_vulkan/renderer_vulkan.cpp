@@ -408,6 +408,9 @@ void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::Framebu
         DrawScreens(frame, compose_layout, layout, flipped);
         scheduler.Flush(frame->render_ready);
         window.Present(frame);
+        if (&window == &main_present_window) {
+            VideoCore::NotePresentedFrame();
+        }
         if ((secondaryWindowEnabled && isSecondaryWindow) || (!secondaryWindowEnabled)) {
             Core::PerfStats::game_frames_updated = false;
             screenRendered = true;

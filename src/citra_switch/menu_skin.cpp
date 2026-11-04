@@ -1142,6 +1142,36 @@ std::shared_ptr<const Picture> TilePicture(const TileInfo& t) {
 
 } // namespace
 
+Image GameFace(const Fonts& f, const TileInfo& t, int s, const Image* picture) {
+    const u32 col = t.system_color;
+    Canvas tmp;
+    tmp.Resize(s, s);
+    const std::shared_ptr<const Picture> pic = picture && !picture->Empty() ? nullptr : TilePicture(t);
+    const Image* src = picture && !picture->Empty() ? picture : (pic ? &pic->img : nullptr);
+    if (src) {
+        const Image face = BuildSquare(*src, s);
+        if (!face.opaque) {
+            tmp.FillRoundAAWith(0, 0, s, s, 0, [col](float k) {
+                return Canvas::Mix(Canvas::Mix(col, kWhite, 0.10f), Canvas::Mix(col, kBlack, 0.45f), k);
+            });
+        }
+        tmp.DrawImage(face, 0, 0);
+        return CanvasImage(tmp);
+    }
+    // As TileFace draws a game without a picture.
+    tmp.FillRoundAAWith(0, 0, s, s, 0, [col](float k) {
+        return Canvas::Mix(Canvas::Mix(col, kBlack, 0.40f), Canvas::Mix(col, MakeColor(0x08, 0x08, 0x10), 0.80f), k);
+    });
+    tmp.Disc(s * 0.86f, s * 0.10f, s * 0.62f, White(0x10));
+    tmp.Circle(s * 0.10f, s * 0.98f, s * 0.42f, 6.0f, White(0x0A));
+    const std::string ini = Initials(t.title);
+    const int ts = std::max(16, static_cast<int>(s * 0.31f));
+    const int iw = f.mark->Measure(ini, ts);
+    f.mark->Draw(tmp, (s - iw) / 2 + 1, s / 2 + static_cast<int>(ts * 0.36f) + 3, ini, ts, Black(0x50));
+    f.mark->Draw(tmp, (s - iw) / 2, s / 2 + static_cast<int>(ts * 0.36f), ini, ts, kColText);
+    return CanvasImage(tmp);
+}
+
 void DrawTile(Canvas& c, const Fonts& f, const TileInfo& t, int x, int y, const TileLook& look) {
     if (look.appear <= 0.01f) {
         return;

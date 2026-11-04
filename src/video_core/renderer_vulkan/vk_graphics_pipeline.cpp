@@ -87,20 +87,42 @@ GraphicsPipeline::GraphicsPipeline(const Instance& instance_, RenderManager& ren
 
 GraphicsPipeline::~GraphicsPipeline() = default;
 
-bool GraphicsPipeline::TryBuild(bool wait_built) {
+void GraphicsPipeline::BuildOnce() {
+    if (!build_claimed.exchange(true)) {
+        Build();
+    }
+}
+
+bool GraphicsPipeline::TryBuild(bool wait_built, bool background) {
     // The pipeline is currently being compiled. We can either wait for it
     // or skip the draw.
     if (is_pending) {
+        // Still waiting behind the shader cache's warm-up: a frame needs it now, so it goes to
+        // the front. Whichever of the two requests runs first builds it.
+        if (queued_in_background && !bumped && !IsDone()) {
+            bumped = true;
+            VideoCore::NotifyShaderCompileBegin();
+            worker->QueueUrgentWork([this] {
+                BuildOnce();
+                VideoCore::NotifyShaderCompileEnd();
+            });
+        }
         return wait_built;
     }
 
-    const auto queue_build = [this] {
+    const auto queue_build = [this, background] {
         VideoCore::NotifyShaderCompileBegin();
         is_pending = true;
-        worker->QueueWork([this] {
-            Build();
+        queued_in_background = background;
+        auto work = [this] {
+            BuildOnce();
             VideoCore::NotifyShaderCompileEnd();
-        });
+        };
+        if (background) {
+            worker->QueueWork(std::move(work));
+        } else {
+            worker->QueueUrgentWork(std::move(work));
+        }
     };
 
 #ifdef __SWITCH__

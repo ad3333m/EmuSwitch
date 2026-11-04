@@ -30,6 +30,8 @@ MenuResult RunMenu(PadState& pad);
 void ShowStartupScreen(std::string_view status);
 // Takes the loading screen down if the menu didn't take it over (a game started straight away).
 void EndStartupScreen();
+// Puts a black frame up as soon as a game's renderer is gone; the menu carries on from it.
+void ShowBlackScreen();
 
 // Queues a one-shot notice for the next RunMenu entry.
 void SetMenuNotice(const std::string& text, bool error = true);

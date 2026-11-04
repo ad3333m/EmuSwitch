@@ -104,10 +104,13 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
       update_queue{update_queue_}, num_worker_threads{GetCompileWorkerCount()},
       async_shader_compilation{Settings::values.async_shader_compilation.GetValue()},
 #ifdef __SWITCH__
-      pipeline_workers{num_worker_threads,
+      // A second pipeline builder takes the time core 0 leaves idle between frames: at low
+      // priority it never holds up the GPU thread there, and a game's graphics come in about
+      // twice as fast.
+      pipeline_workers{2,
                        "Pipeline workers",
                        {},
-                       {Common::Horizon::CoreAudio},
+                       {Common::Horizon::CoreAudio, Common::Horizon::CoreFrontend},
                        GetCompileWorkerPriority(async_shader_compilation)},
       shader_workers{num_worker_threads,
                      "Shader workers",
@@ -476,6 +479,7 @@ bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
     GraphicsPipeline* const pipeline = CurrentDiskCache().GetPipeline(info);
     if (!pipeline->IsDone()) {
         if (!pipeline->TryBuild(wait_built)) {
+            VideoCore::NoteSkippedDraw();
             return false;
         }
         WaitPipelineBuilt(*pipeline);

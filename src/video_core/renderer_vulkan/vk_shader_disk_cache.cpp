@@ -1515,7 +1515,9 @@ bool ShaderDiskCache::InitPLCache(const std::atomic_bool& stop_loading,
                 parent.instance, parent.renderpass_cache, info, *parent.driver_pipeline_cache,
                 *parent.pipeline_layout, shaders, &parent.pipeline_workers);
 
-            it_pl.value()->TryBuild(false);
+            // Warm-up: behind anything a frame asks for, so a game's first scenes don't wait
+            // for the whole cache to be rebuilt.
+            it_pl.value()->TryBuild(false, true);
 
             LOG_DEBUG(Render_Vulkan, "    built.");
 

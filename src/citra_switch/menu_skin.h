@@ -150,6 +150,10 @@ struct TileLook {
 };
 // Draws a tile whose resting top-left is (x, y).
 void DrawTile(Canvas& c, const Fonts& f, const TileInfo& t, int x, int y, const TileLook& look);
+// A game's face as a plain square `s` wide, the way its tile shows it: `picture` (or else its
+// tile's picture or 3DS icon) filling the square, or its initials on its console's colour. For
+// its HOME Menu icon; built on the spot, not cached.
+Image GameFace(const Fonts& f, const TileInfo& t, int s, const Image* picture = nullptr);
 void DrawEmptySlot(Canvas& c, int x, int y, float alpha);
 // The cursor ring around a (w x w) square at (x, y); it glides between tiles.
 void DrawFocusRing(Canvas& c, float x, float y, float w, float t, float alpha);

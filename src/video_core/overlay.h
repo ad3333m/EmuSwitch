@@ -72,6 +72,13 @@ void NotifyShaderCompileBegin();
 void NotifyShaderCompileEnd(u32 count = 1);
 u32 GetPendingShaderCompiles();
 
+// Frames put on screen, and draws skipped because their pipeline was still building. Both only
+// ever count up, so the frontend can tell when a game's frames have started coming out whole.
+void NotePresentedFrame();
+u32 GetPresentedFrames();
+void NoteSkippedDraw();
+u32 GetSkippedDraws();
+
 // A short-lived message shown over the game, used to report things the player asked for.
 // Posting a new one replaces whatever is showing.
 void PostOverlayToast(const std::string& text, u32 duration_ms = 2500);

@@ -812,6 +812,12 @@ void BuildGeneral(std::vector<SettingEntry>& out) {
                     EntryFlag::None, QuickSection::System},
                    IsPauseInQuickMenu, SetPauseInQuickMenu, false);
 
+    t.Group("HOME Menu");
+    t << Modal({"Add EmuSwitch to HOME Menu",
+                "Puts an EmuSwitch icon on the HOME Menu. Games you quit come back to EmuSwitch "
+                "instead of hbmenu. Needs sigpatches."},
+               SettingsModal::HomeMenuIcon, [] { return std::string{}; });
+
     t.Group("Updates");
     t << Modal({"Check for Updates", "Asks GitHub whether a newer build is available."},
                SettingsModal::CheckForUpdates, [] { return std::string{CurrentVersion()}; });

@@ -88,6 +88,9 @@ if missing:
 PY
 ls -la "$FONTS"
 
+# The loader HOME Menu forwarders run (forwarder.cpp installs it with the paths it starts).
+bash "$ROOT/tools/forwarder_hbl/build.sh" "$ROOT/dist/emuswitch-romfs/forwarder"
+
 # 5. EmuSwitch itself (Dekopon's frontend running the 3DS engine in-process).
 cmake -S . -B build/switch \
     -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \

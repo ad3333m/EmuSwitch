@@ -29,6 +29,7 @@
 #include "citra_switch/config.h"
 #include "citra_switch/cover_fetch.h"
 #include "citra_switch/custom_art.h"
+#include "citra_switch/forwarder.h"
 #include "citra_switch/input.h"
 #include "citra_switch/menu.h"
 #include "citra_switch/menu_data.h"
@@ -135,6 +136,33 @@ void PresentBlack(Framebuffer& fb) {
     }
     std::fill(px, px + fb.fb_size / sizeof(u32), 0xFF000000u);
     framebufferEnd(&fb);
+}
+
+// Framebuffers taken off the window but not freed yet. The screen keeps showing a buffer after
+// the window lets it go, until the next owner (a game's renderer) puts a frame up; freed at once,
+// its memory went to the game being loaded and came up on screen as a flash of garbage.
+std::vector<Framebuffer> g_retired_fbs;
+
+void RetireFramebuffer(Framebuffer& fb) {
+    if (!fb.has_init) {
+        return;
+    }
+    nwindowReleaseBuffers(fb.win);
+    g_retired_fbs.push_back(fb);
+    fb = Framebuffer{};
+}
+
+// Once something else is on screen. What framebufferClose() frees, minus the window release
+// (done already, and the window has another owner by now).
+void FreeRetiredFramebuffers() {
+    for (Framebuffer& fb : g_retired_fbs) {
+        if (fb.buf_linear) {
+            free(fb.buf_linear);
+        }
+        nvMapClose(&fb.map);
+        free(fb.buf);
+    }
+    g_retired_fbs.clear();
 }
 
 // Fonts and drawing threads, set up once for the loading screen and the menu.
@@ -964,6 +992,7 @@ public:
                 if (remap_open) {
                     CloseRemap();
                 }
+                FadeOut();
                 Flush();
                 return {MenuAction::Exit, {}};
             }
@@ -998,6 +1027,7 @@ public:
                 if (down & (HidNpadButton_A | HidNpadButton_B | HidNpadButton_Plus |
                             HidNpadButton_Minus)) {
                     QueueUpdatedRelaunch();
+                    FadeOut();
                     Flush();
                     return {MenuAction::Exit, {}};
                 }
@@ -1053,6 +1083,7 @@ public:
                 done = false;
             }
             if (done) {
+                FadeOut();
                 return result;
             }
 
@@ -1069,6 +1100,7 @@ public:
             if (pending_launch) {
                 MenuResult launch{MenuAction::Launch, *pending_launch};
                 pending_launch.reset();
+                FadeOut();
                 return launch;
             }
 
@@ -1096,7 +1128,7 @@ public:
         }
         if (fb_ready) {
             PresentBlack(fb);
-            framebufferClose(&fb);
+            RetireFramebuffer(fb);
         }
     }
 
@@ -1999,6 +2031,9 @@ private:
             break;
         case SettingsModal::CheckForUpdates:
             BeginUpdateCheck(UpdateCheckKind::Manual);
+            break;
+        case SettingsModal::HomeMenuIcon:
+            OpenForwarderConfirm(std::nullopt);
             break;
         case SettingsModal::ReleaseNotes:
             OpenReleaseNotes();
@@ -4167,7 +4202,7 @@ private:
     }
 
     int GameMenuRows() const {
-        return game_menu == GameMenu::Picture ? 2 : 3;
+        return game_menu == GameMenu::Picture ? 2 : 4;
     }
 
     void OpenGameMenu(GameMenu menu) {
@@ -4205,6 +4240,8 @@ private:
                 BeginGameMove();
             } else if (row == 1) {
                 OpenDetails();
+            } else if (row == 2) {
+                OpenForwarderConfirm(game);
             } else {
                 OpenDeleteGameConfirm(game);
             }
@@ -4213,6 +4250,47 @@ private:
         } else {
             PickSteamGridPicture(game);
         }
+    }
+
+    // A HOME Menu icon for `game`, or for EmuSwitch itself without one.
+    void OpenForwarderConfirm(const std::optional<GameEntry>& game) {
+        std::vector<std::string> lines{(game ? "\"" + g_font.Truncate(game->title, 18, 460) + "\"" : std::string{"EmuSwitch"}) +
+                                       " gets an icon on the HOME Menu."};
+        lines.push_back(game ? "It opens the game straight away, in EmuSwitch."
+                             : "Games you quit then come back to EmuSwitch, not hbmenu.");
+        confirm = ConfirmPrompt{"Add to HOME Menu",
+                                std::move(lines),
+                                "Needs sigpatches. Delete it from the HOME Menu like any software.",
+                                "Add",
+                                [this, game] { RunAddForwarder(game); },
+                                {}};
+    }
+
+    void RunAddForwarder(const std::optional<GameEntry>& game) {
+        ShowBusy("Adding to the HOME Menu...");
+        Forwarder::Request request;
+        request.nro = GetUpdaterExecutablePath();
+        Gfx::Image icon;
+        if (game) {
+            request.name = game->title;
+            request.author = "EmuSwitch - " + std::string{SystemName(game->system)};
+            request.rom = game->path;
+            // Its picture at full size, when it has one, so the icon is sharp.
+            Gfx::Image picture;
+            if (const std::string art = Art::GameArtPath(*game); !art.empty()) {
+                Art::DecodePicture(art, 512, picture);
+            }
+            icon = Skin::GameFace(SkinFonts(), TileFor(*game), 256, picture.Empty() ? nullptr : &picture);
+            if (icon.w == 256 && icon.h == 256) {
+                request.icon_rgba = icon.px.data();
+            }
+        }
+        const std::string error = Forwarder::Install(request);
+        if (!error.empty()) {
+            ShowNotice(error, true);
+            return;
+        }
+        ShowNotice((game ? game->title : std::string{"EmuSwitch"}) + " is on the HOME Menu now", false);
     }
 
     void OpenDeleteGameConfirm(const GameEntry& game) {
@@ -4492,7 +4570,7 @@ private:
         const bool picture = game_menu == GameMenu::Picture;
         const std::string heading = picture ? "Picture for " + game.title : game.title;
         g_font.Draw(c, p.x + 24, p.y + 30, g_font.Truncate(heading, 16, p.w - 48), 16, kColTextDim);
-        static constexpr const char* kActionRows[] = {"Move Placement", "Info", "Delete"};
+        static constexpr const char* kActionRows[] = {"Move Placement", "Info", "Add to HOME Menu", "Delete"};
         static constexpr const char* kPictureRows[] = {"SD Card", "SteamGridDB"};
         const bool no_key = picture && GetSteamGridDbKey().empty();
         for (int r = 0; r < GameMenuRows(); ++r) {
@@ -4502,7 +4580,7 @@ private:
                 Skin::DrawRow(c, row.x, row.y, row.w, row.h, true);
             }
             // Delete is the one that can't be taken back, so it reads in red.
-            const bool danger = !picture && r == 2;
+            const bool danger = !picture && r == 3;
             const u32 color = danger ? (on ? kColError : WithAlpha(kColError, 0xC8))
                                      : (on ? kColText : kColTextDim);
             g_font_bold.Draw(c, row.x + 24, CenterBaseline(row.y, row.h, 21),
@@ -5575,6 +5653,29 @@ private:
         DrawHint(c, hx, hy, "+ -", "Exit");
     }
 
+    // Leaving the menu (a game starting, EmuSwitch closing) fades it out to black instead of
+    // cutting to black, which looked like a flash.
+    void FadeOut() {
+        constexpr double kFadeOutSeconds = 0.22;
+        const double start = NowSeconds();
+        while (fb_ready && appletMainLoop()) {
+            const double t = (NowSeconds() - start) / kFadeOutSeconds;
+            if (t >= 1.0) {
+                break;
+            }
+            const float k = static_cast<float>(t * t * (3.0 - 2.0 * t));
+            const auto alpha = static_cast<u8>(std::lround(255.0f * k));
+            PrepareFrame();
+            RenderFrame([&](Canvas& c) {
+                DrawScene(c);
+                c.FillRect(0, 0, c.Width(), c.Height(), MakeColor(0, 0, 0, alpha));
+            });
+        }
+        if (fb_ready) {
+            PresentBlack(fb);
+        }
+    }
+
     // Full-frame busy indicator for the brief blocking scans.
     void ShowBusy(std::string_view msg) {
         const std::string text{msg};
@@ -5605,6 +5706,7 @@ private:
         // A game's swapchain that wasn't torn down completely leaves its buffers on the window,
         // and then the window takes no new ones, so whatever is there is released first. If the
         // framebuffer still can't be made, the frame is skipped and this runs again next frame.
+        FreeRetiredFramebuffers();
         NWindow* window = nwindowGetDefault();
         nwindowReleaseBuffers(window);
         // Three buffers so a slow frame never stalls on the display; drawn straight into
@@ -5738,9 +5840,24 @@ void ShowStartupScreen(std::string_view status) {
 
 void EndStartupScreen() {
     if (g_splash_fb_ready) {
-        framebufferClose(&g_splash_fb);
+        RetireFramebuffer(g_splash_fb);
         g_splash_fb_ready = false;
     }
+}
+
+void ShowBlackScreen() {
+    // The game's renderer is gone, so the buffers the menu let go of before it are off screen.
+    FreeRetiredFramebuffers();
+    if (!g_splash_fb_ready) {
+        NWindow* window = nwindowGetDefault();
+        nwindowReleaseBuffers(window);
+        if (R_FAILED(framebufferCreate(&g_splash_fb, window, kPanelW, kPanelH, PIXEL_FORMAT_RGBA_8888, 3))) {
+            g_splash_fb = Framebuffer{};
+            return;
+        }
+        g_splash_fb_ready = true;
+    }
+    PresentBlack(g_splash_fb);
 }
 
 void SetMenuNotice(const std::string& text, bool error) {

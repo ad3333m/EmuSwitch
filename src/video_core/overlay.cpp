@@ -16,6 +16,8 @@ std::mutex s_mutex;
 OverlayMenuState s_state;
 std::atomic<bool> s_visible{false};
 std::atomic<u32> s_pending_shader_compiles{0};
+std::atomic<u32> s_presented_frames{0};
+std::atomic<u32> s_skipped_draws{0};
 
 std::atomic<u32> s_rotation{0};
 
@@ -109,6 +111,22 @@ void NotifyShaderCompileEnd(u32 count) {
 
 u32 GetPendingShaderCompiles() {
     return s_pending_shader_compiles.load(std::memory_order_acquire);
+}
+
+void NotePresentedFrame() {
+    s_presented_frames.fetch_add(1, std::memory_order_acq_rel);
+}
+
+u32 GetPresentedFrames() {
+    return s_presented_frames.load(std::memory_order_acquire);
+}
+
+void NoteSkippedDraw() {
+    s_skipped_draws.fetch_add(1, std::memory_order_relaxed);
+}
+
+u32 GetSkippedDraws() {
+    return s_skipped_draws.load(std::memory_order_acquire);
 }
 
 void PostOverlayToast(const std::string& text, u32 duration_ms) {

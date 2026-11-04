@@ -51,6 +51,7 @@ enum class SettingsModal {
     ResetDefaults,
     ClearShaderCache,
     CheckForUpdates,
+    HomeMenuIcon,
     ReleaseNotes,
     Username,
     Country,

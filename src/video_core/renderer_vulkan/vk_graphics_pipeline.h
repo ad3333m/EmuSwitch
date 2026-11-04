@@ -323,7 +323,9 @@ public:
                               Common::ThreadWorker* worker);
     ~GraphicsPipeline();
 
-    bool TryBuild(bool wait_built);
+    // `background` builds (the shader cache warming up when a game starts) wait behind the ones a
+    // drawn frame needs.
+    bool TryBuild(bool wait_built, bool background = false);
 
     bool Build(bool fail_on_compile_required = false);
 
@@ -340,9 +342,16 @@ private:
     vk::PipelineLayout pipeline_layout;
     vk::PipelineCache pipeline_cache;
 
+    // Builds once, whichever of its queued requests runs first.
+    void BuildOnce();
+
     PipelineInfo info;
     std::array<Shader*, 3> stages;
     bool is_pending{};
+    // Queued behind the cache warm-up, and whether a frame has since asked for it up front.
+    bool queued_in_background{};
+    bool bumped{};
+    std::atomic_bool build_claimed{false};
 };
 
 } // namespace Vulkan

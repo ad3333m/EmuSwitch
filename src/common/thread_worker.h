@@ -76,16 +76,19 @@ public:
                     Task task;
                     {
                         std::unique_lock lock{queue_mutex};
-                        if (requests.empty()) {
+                        if (requests.empty() && urgent_requests.empty()) {
                             wait_condition.notify_all();
                         }
-                        Common::CondvarWait(condition, lock, stop_token,
-                                            [this] { return !requests.empty(); });
+                        Common::CondvarWait(condition, lock, stop_token, [this] {
+                            return !requests.empty() || !urgent_requests.empty();
+                        });
                         if (stop_token.stop_requested()) {
                             break;
                         }
-                        task = std::move(requests.front());
-                        requests.pop();
+                        // Urgent work goes ahead of everything queued before it.
+                        std::queue<Task>& from = urgent_requests.empty() ? requests : urgent_requests;
+                        task = std::move(from.front());
+                        from.pop();
                     }
                     if constexpr (with_state) {
                         task(&state);
@@ -128,17 +131,29 @@ public:
         condition.notify_one();
     }
 
+    // Like QueueWork, but runs before any work queued with QueueWork that hasn't started yet.
+    void QueueUrgentWork(Task work) {
+        {
+            std::unique_lock lock{queue_mutex};
+            urgent_requests.emplace(std::move(work));
+            ++work_scheduled;
+        }
+        condition.notify_one();
+    }
+
     // Forgets the requests no worker has started yet, so WaitForRequests() only waits for the
     // ones already running. Returns how many were dropped.
     std::size_t DropPendingRequests() {
         std::queue<Task> dropped;
+        std::queue<Task> dropped_urgent;
         {
             std::unique_lock lock{queue_mutex};
             dropped.swap(requests);
-            work_done += dropped.size();
+            dropped_urgent.swap(urgent_requests);
+            work_done += dropped.size() + dropped_urgent.size();
         }
         wait_condition.notify_all();
-        return dropped.size();
+        return dropped.size() + dropped_urgent.size();
     }
 
     void WaitForRequests(std::stop_token stop_token = {}) {
@@ -172,6 +187,7 @@ private:
     }
 
     std::queue<Task> requests;
+    std::queue<Task> urgent_requests;
     std::mutex queue_mutex;
     std::condition_variable_any condition;
     std::condition_variable wait_condition;

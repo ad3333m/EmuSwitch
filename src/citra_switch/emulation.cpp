@@ -18,6 +18,7 @@
 #include "citra_switch/applets/swkbd.h"
 #include "citra_switch/config.h"
 #include "citra_switch/emu_window.h"
+#include "citra_switch/overlay_menu.h"
 #include "citra_switch/themes.h"
 #include "common/file_util.h"
 #include "common/horizon_boost.h"
@@ -222,14 +223,74 @@ bool CurrentSaveStateKey(u64& program_id, u64& movie_id) {
     return true;
 }
 
+// After a game starts or a state loads, the renderer is new: its first frames come out with
+// pieces missing while their pipelines build, and fading in over those looked like a flash. The
+// picture stays black until a few frames in a row were drawn whole, then fades in once. It
+// doesn't wait longer than kRevealTimeout, nor while the player has the quick menu up.
+struct RevealState {
+    bool armed = false;
+    u32 first_frame = 0;
+    u32 last_frame = 0;
+    u32 last_skipped = 0;
+    u32 whole_frames = 0;
+    std::chrono::steady_clock::time_point deadline{};
+};
+// The emulation thread arms and pumps it; closing the game (the main thread) disarms it, under
+// the lock, so a late reveal can't undo the fade to black.
+std::mutex s_reveal_mutex;
+RevealState s_reveal;
+constexpr u32 kRevealMinFrames = 8;
+constexpr u32 kRevealWholeFrames = 3;
+constexpr auto kRevealTimeout = std::chrono::milliseconds(4000);
+
+void ArmReveal() {
+    std::scoped_lock lock{s_reveal_mutex};
+    s_reveal.armed = true;
+    s_reveal.first_frame = s_reveal.last_frame = VideoCore::GetPresentedFrames();
+    s_reveal.last_skipped = VideoCore::GetSkippedDraws();
+    s_reveal.whole_frames = 0;
+    s_reveal.deadline = std::chrono::steady_clock::now() + kRevealTimeout;
+}
+
+// Disarms the reveal and fades to `alpha`, in one step.
+void FadeInsteadOfReveal(float alpha, u32 ms) {
+    std::scoped_lock lock{s_reveal_mutex};
+    s_reveal.armed = false;
+    VideoCore::FadeOverlayTo(alpha, ms);
+}
+
+void PumpReveal() {
+    std::scoped_lock lock{s_reveal_mutex};
+    if (!s_reveal.armed) {
+        return;
+    }
+    const u32 frames = VideoCore::GetPresentedFrames();
+    const u32 skipped = VideoCore::GetSkippedDraws();
+    if (frames != s_reveal.last_frame) {
+        s_reveal.whole_frames =
+            skipped == s_reveal.last_skipped ? s_reveal.whole_frames + (frames - s_reveal.last_frame) : 0;
+        s_reveal.last_frame = frames;
+        s_reveal.last_skipped = skipped;
+    }
+    const bool ready = frames - s_reveal.first_frame >= kRevealMinFrames &&
+                       s_reveal.whole_frames >= kRevealWholeFrames;
+    if (ready || IsQuickMenuOpen() || std::chrono::steady_clock::now() >= s_reveal.deadline) {
+        s_reveal.armed = false;
+        VideoCore::FadeOverlayTo(0.0f, kFadeInMs);
+    }
+}
+
 // Turns a completed save state request into an on-screen message.
 void ReportSaveStateEvent(Core::System& system) {
     const auto event = system.TakeSaveStateEvent();
     if (!event) {
         return;
     }
-    if (event->loading) {
-        VideoCore::FadeOverlayTo(0.0f, kFadeInMs);
+    if (event->loading && event->success) {
+        ArmReveal();
+    } else {
+        // A save only dimmed the picture (see the quick menu), and a failed load left it as it was.
+        FadeInsteadOfReveal(0.0f, kFadeInMs);
     }
     const char* verb = event->loading ? "Load" : "Save";
     if (event->success) {
@@ -288,12 +349,13 @@ void PresentFor(Core::System& system, u32 ms) {
     }
 }
 
-// A save or a load freezes the picture for a second or two. The quick menu has just closed, so
-// the game is put back on screen first (with a note, for a save) rather than the menu staying
-// frozen over it; a load, which rebuilds the renderer, fades to black first.
+// A save or a load freezes the picture for a second or two. The quick menu has just closed (and
+// left the picture dimmed, so it doesn't flash up bright), so the game is put back on screen
+// first (with a note, for a save) rather than the menu staying frozen over it; a load, which
+// rebuilds the renderer, fades on down to black first.
 void PrepareStateOperation(Core::System& system, bool loading) {
     if (loading) {
-        VideoCore::FadeOverlayTo(1.0f, kFadeOutMs);
+        FadeInsteadOfReveal(1.0f, kFadeOutMs);
         PresentFor(system, kFadeOutMs + 24);
     } else {
         VideoCore::PostOverlayToast("Saving state...", 10000);
@@ -350,8 +412,9 @@ void EmuThread(std::string path) {
     }
 
     LOG_INFO(Frontend, "Emulation started (program id {:016X})", program_id);
-    VideoCore::FadeOverlayTo(0.0f, kFadeInMs);
+    ArmReveal();
     while (!s_stop) {
+        PumpReveal();
         if (s_layout_update_pending.exchange(false, std::memory_order_acq_rel)) {
             // The custom layout is kept as fractions: redo its pixels for the current output,
             // which changes size when the console is docked or undocked.
@@ -365,6 +428,7 @@ void EmuThread(std::string path) {
         }
         if (s_paused.load(std::memory_order_relaxed)) {
             // The overlay is only drawn as part of a frame present, so the last frame has to keep being presented.
+            // (PumpReveal above already gave up the black for the quick menu.)
             Core::PerfStats::game_frames_updated = true;
             system.GPU().SwapBuffers();
             std::this_thread::sleep_for(kPausedFrameInterval);
@@ -380,7 +444,7 @@ void EmuThread(std::string path) {
         if (result == Core::System::ResultStatus::ErrorSavestate ||
             result == Core::System::ResultStatus::ErrorSavestateBuildMismatch) {
             LOG_ERROR(Frontend, "Save state operation failed: {}", system.GetStatusDetails());
-            VideoCore::FadeOverlayTo(0.0f, kFadeInMs);
+            FadeInsteadOfReveal(0.0f, kFadeInMs);
             if (result == Core::System::ResultStatus::ErrorSavestateBuildMismatch) {
                 VideoCore::PostOverlayToast("That state is from a different version of EmuSwitch",
                                             4000);
@@ -833,9 +897,17 @@ void StopRom() {
     LOG_INFO(Frontend, "Closing the game");
     if (!s_stop && s_emu_thread.joinable()) {
         // The picture fades to black before the renderer goes, rather than cutting. Paused or
-        // not, the emulation thread keeps presenting frames meanwhile.
-        VideoCore::FadeOverlayTo(1.0f, kFadeOutMs);
-        std::this_thread::sleep_for(std::chrono::milliseconds(kFadeOutMs + 30));
+        // not, the emulation thread keeps presenting frames meanwhile. The screen keeps the last
+        // frame through the teardown, so a frame drawn after the fade ended (all black) has to be
+        // on screen first, or a nearly black one stays up.
+        FadeInsteadOfReveal(1.0f, kFadeOutMs);
+        std::this_thread::sleep_for(std::chrono::milliseconds(kFadeOutMs + 10));
+        const u32 faded = VideoCore::GetPresentedFrames();
+        const auto give_up = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+        while (VideoCore::GetPresentedFrames() == faded && !s_stop &&
+               std::chrono::steady_clock::now() < give_up) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        }
     }
     s_stop = true;
     s_paused = false;
