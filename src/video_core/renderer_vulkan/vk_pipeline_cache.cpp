@@ -104,13 +104,13 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
       update_queue{update_queue_}, num_worker_threads{GetCompileWorkerCount()},
       async_shader_compilation{Settings::values.async_shader_compilation.GetValue()},
 #ifdef __SWITCH__
-      // A second pipeline builder takes the time core 0 leaves idle between frames: at low
-      // priority it never holds up the GPU thread there, and a game's graphics come in about
-      // twice as fast.
-      pipeline_workers{2,
+      // One builder, on the audio core. A second one on core 0 (RC14) starved the async GPU
+      // thread there: libnx starts threads at priority 59, below even the builders' "Low" (51),
+      // so games crawled at about 1 fps while the shader cache warmed up.
+      pipeline_workers{num_worker_threads,
                        "Pipeline workers",
                        {},
-                       {Common::Horizon::CoreAudio, Common::Horizon::CoreFrontend},
+                       {Common::Horizon::CoreAudio},
                        GetCompileWorkerPriority(async_shader_compilation)},
       shader_workers{num_worker_threads,
                      "Shader workers",
