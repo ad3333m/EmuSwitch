@@ -613,19 +613,26 @@ std::string InstallContents(u64 tid, const std::vector<Nca>& ncas, const Bytes& 
     if (error.empty()) {
         // IApplicationManagerInterface: PushApplicationRecord (16), then
         // InvalidateApplicationControlCache (404) so the HOME Menu reads the new title and icon.
-        Service* am = nsGetServiceSession_ApplicationManagerInterface();
-        const ContentStorageRecord record{key, NcmStorageId_SdCard, {}};
-        const struct {
-            u8 last_modified_event; // installed
-            u8 padding[7];
-            u64 application_id;
-        } in{3, {}, tid};
-        rc = serviceDispatchIn(am, 16, in, .buffer_attrs = {SfBufferAttr_HipcMapAlias | SfBufferAttr_In},
-                               .buffers = {{&record, sizeof(record)}});
+        // On [3.0.0+] libnx doesn't keep one open (its own session getter returns an unopened
+        // service there, which failed with 0xE401, invalid handle), so it's opened here.
+        Service am{};
+        rc = nsGetApplicationManagerInterface(&am);
+        if (R_SUCCEEDED(rc)) {
+            const ContentStorageRecord record{key, NcmStorageId_SdCard, {}};
+            const struct {
+                u8 last_modified_event; // installed
+                u8 padding[7];
+                u64 application_id;
+            } in{3, {}, tid};
+            rc = serviceDispatchIn(&am, 16, in, .buffer_attrs = {SfBufferAttr_HipcMapAlias | SfBufferAttr_In},
+                                   .buffers = {{&record, sizeof(record)}});
+            if (R_SUCCEEDED(rc)) {
+                serviceDispatchIn(&am, 404, tid);
+            }
+            serviceClose(&am);
+        }
         if (R_FAILED(rc)) {
             error = Failed("Couldn't add the forwarder to the HOME Menu", rc);
-        } else {
-            serviceDispatchIn(am, 404, tid);
         }
     }
     nsExit();
