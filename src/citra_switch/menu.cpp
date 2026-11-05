@@ -572,10 +572,12 @@ float NoticeAlpha() {
     return std::min(in, out);
 }
 
-void DrawNotice(Canvas& canvas) {
+// `over_hints`: on Home, where the round buttons are where it usually goes, it covers the hints.
+void DrawNotice(Canvas& canvas, bool over_hints) {
     const float alpha = NoticeAlpha();
     if (alpha > 0.0f) {
-        Skin::DrawToast(canvas, SkinFonts(), g_notice, g_notice_is_error, alpha);
+        Skin::DrawToast(canvas, SkinFonts(), g_notice, g_notice_is_error, alpha,
+                        over_hints ? canvas.Height() - 46 - 18 : -1);
     }
 }
 
@@ -606,13 +608,6 @@ void DrawTile(Canvas& canvas, const GameEntry& game, int x, int y, const Skin::T
 
 void DrawEmptyLibrary(Canvas& canvas, const std::string& roms_dir) {
     Skin::DrawEmptyLibrary(canvas, SkinFonts(), roms_dir, AnimTime());
-}
-
-// Layout of the library grid
-using Skin::Grid;
-
-Grid ComputeGrid() {
-    return Skin::ComputeGrid(g_screen_w, g_screen_h);
 }
 
 // swkbd search prompt
@@ -907,11 +902,15 @@ InfoCard BuildWelcomeCard() {
     card.title = "Welcome to EmuSwitch";
     card.pages.push_back(MakeInfoPage(
         "Your games",
-        {"EmuSwitch lists the games it finds in:", paths.roms_dir, "and in sdmc:/roms/<system>/ (3ds, ds, gba, gb, ps2, wiiu).", "",
+        {"EmuSwitch lists the games it finds in:", paths.roms_dir,
+         "and in sdmc:/roms/<system>/ (3ds, ds, gba, gb, ps2, wiiu).", "",
          "- 3DS, CCI, CXI, 3DSX and APP files are recognised; CIA files install by themselves.",
-         "- DS, GBA, Game Boy, NES, SNES, N64, PS1, PS2, PSP and Wii U games open in their own emulator.",
+         "- DS, GBA, Game Boy, NES, SNES, N64, PS1, PS2, PSP and Wii U games open in their own "
+         "emulator.",
          "- PS2: drop your BIOS .zip or .bin into sdmc:/roms/ps2/.",
-         "- The Paths tab moves that folder, adds a second one, and can scan subfolders."},
+         "- The Paths tab moves that folder, adds a second one, and can scan subfolders.",
+         "- Home has a page per console: L and R switch between them. Settings > General > Mix "
+         "Consoles on Home puts every game in one row."},
         max_w));
     card.pages.push_back(MakeInfoPage(
         "While a game runs",
@@ -930,7 +929,7 @@ InfoCard BuildWelcomeCard() {
     card.pages.push_back(MakeInfoPage(
         "Settings",
         {"- Graphics chooses the renderer, the resolution and the shader options.",
-         "- Reset All Settings offers the Default, Performance and Ultra Performance presets."
+         "- Reset All Settings offers the Default, Performance and Ultra Performance presets. "
          "Performance is recommended for most titles.",
          "- General holds the update channel, Check for Updates and the release notes.", "",
          "Press A to start."},
@@ -1064,6 +1063,8 @@ public:
                 SetTab(kRailItems[(static_cast<int>(tab) + step) % n].first);
                 rail_sel = tab;
                 focus = Focus::Content;
+            } else if (focus == Focus::Rail && tab == Tab::Library) {
+                done = HandleHomeButtons(down, nav, result);
             } else if (focus == Focus::Rail) {
                 HandleRail(down, nav);
             } else if (tab == Tab::Library) {
@@ -1082,6 +1083,9 @@ public:
             }
             if (done) {
                 FadeOut();
+                if (result.action == MenuAction::Exit) {
+                    Flush(); // Home's Exit button, as +/- does
+                }
                 return result;
             }
 
@@ -1099,6 +1103,12 @@ public:
                 pending_launch.reset();
                 FadeOut();
                 return launch;
+            }
+            if (pending_exit) {
+                pending_exit = false;
+                FadeOut();
+                Flush();
+                return {MenuAction::Exit, {}};
             }
 
             Frame();
@@ -1136,25 +1146,19 @@ private:
     std::vector<GameEntry> games;
     std::vector<int> filtered; // Indices into `games` after search filtering.
     int selected = 0;          // Index into `filtered`.
-    // Home: one section per console, in the Systems page's order; each a header and rows of tiles.
+    // Home: one row of games with round buttons under it. Each console with games is a page of
+    // its own, switched with L and R, unless Mix Consoles on Home puts them all in one row.
+    // `filtered` is grouped by console in the Systems page's order; these are those groups.
     struct HomeSection {
         int system; // Multi::Systems() index, -1 for the 3DS
         int first;  // index into `filtered`
         int count;
-        float y;    // top of its header, in pixels from the top of the list
-    };
-    struct HomeRow {
-        int section;
-        int first; // index into `filtered`
-        int count;
-        float y; // top of its tiles, in pixels from the top of the list
     };
     std::vector<HomeSection> home_sections;
-    std::vector<HomeRow> home_rows;
-    std::vector<int> home_row_of; // `filtered` index -> row
-    float home_height = 0.0f;
-    int home_cols = 0;
-    float home_top = 0.0f; // where the list is scrolled to, in pixels
+    float home_scroll = 0.0f; // how far the row is scrolled to the left, in pixels
+    int home_page_first = -1; // the first game of the page on screen, to notice a page change
+    std::unordered_map<int, int> home_page_cursor; // console -> where the cursor was on its page
+    int home_button = 0; // the round button the cursor is on, while focus is Focus::Rail
     int paths_sel = 0;
     std::string search;
     SwitchPaths paths{};
@@ -1209,7 +1213,7 @@ private:
     float page_dir = 0.0f;  // -1 from the left, +1 from the right
     int modal_kind = 0;
     float modal_anim = 1.0f;
-    Spring grid_scroll;     // pixels, eased towards home_top
+    Spring grid_scroll; // pixels, eased towards home_scroll
     Spring cursor_x, cursor_y;
     bool cursor_ready = false;
     Spring lift;            // how far the focused tile has popped up
@@ -1362,6 +1366,12 @@ private:
             }
         }
         tab = next;
+        if (tab == Tab::Library) {
+            // Mix Consoles on Home may have changed on the Settings page.
+            BuildHomeLayout();
+            home_page_first = -1;
+            EnsureVisible();
+        }
         if (tab == Tab::Paths) {
             RefreshRomsDir2Presence();
         }
@@ -1547,32 +1557,26 @@ private:
         });
         selected = std::clamp(selected, 0, std::max(0, static_cast<int>(filtered.size()) - 1));
         BuildHomeLayout();
-        home_top = 0.0f;
-        grid_scroll.Snap(0.0f);
-        cursor_ready = false;
+        home_page_first = -1; // the row starts over
+        EnsureVisible();
     }
 
-    static constexpr int kSectionGap = 24; // between a section's last row and the next header
-
-    static int HomeViewTop() {
-        return kContentTop + 4;
-    }
-    static int HomeViewBottom() {
-        return g_screen_h - kHintH - 40;
-    }
-    static float HomeViewH() {
-        return static_cast<float>(HomeViewBottom() - HomeViewTop());
-    }
+    // Home's row of tiles, kHomeTile square and kHomeFocus once focused, and the round buttons
+    // under it.
+    static constexpr int kHomeTile = 240;
+    static constexpr int kHomeFocus = 256;
+    static constexpr int kHomeGap = 20;
+    static constexpr int kHomeStep = kHomeTile + kHomeGap;
+    static constexpr int kHomeRowX = 64;
+    static constexpr int kHomeRowTop = 176;
+    static constexpr int kHomeHeadingY = 28;
+    static constexpr int kHomeButtonD = 76;
+    static constexpr int kHomeButtonStep = 112;
+    static constexpr int kHomeButtonY = kHomeRowTop + kHomeFocus + 96;
 
     void BuildHomeLayout() {
-        const Grid grid = ComputeGrid();
-        home_cols = grid.cols;
         home_sections.clear();
-        home_rows.clear();
-        home_row_of.assign(filtered.size(), 0);
-        const int step = kTileH + kTileGap;
         const int n = static_cast<int>(filtered.size());
-        float y = 0.0f;
         for (int i = 0; i < n;) {
             const int sys =
                 games[static_cast<std::size_t>(filtered[static_cast<std::size_t>(i)])].shown_system;
@@ -1581,106 +1585,197 @@ private:
                                     .shown_system == sys) {
                 ++j;
             }
-            home_sections.push_back({sys, i, j - i, y});
-            y += Skin::kSectionHeaderH;
-            for (int k = i; k < j; k += grid.cols) {
-                const int cnt = std::min(grid.cols, j - k);
-                for (int m = k; m < k + cnt; ++m) {
-                    home_row_of[static_cast<std::size_t>(m)] = static_cast<int>(home_rows.size());
-                }
-                home_rows.push_back({static_cast<int>(home_sections.size()) - 1, k, cnt, y});
-                y += step;
-            }
-            y += kSectionGap - kTileGap;
+            home_sections.push_back({sys, i, j - i});
             i = j;
         }
-        home_height = home_rows.empty() ? 0.0f : home_rows.back().y + kTileH;
     }
 
-    // The tile in the row above (dir -1) or below (+1) `index`, in the same column where it can.
-    int RowNeighbour(int index, int dir) const {
-        if (index < 0 || index >= static_cast<int>(home_row_of.size())) {
-            return index;
-        }
-        const int r = home_row_of[static_cast<std::size_t>(index)];
-        const int nr = r + dir;
-        if (nr < 0 || nr >= static_cast<int>(home_rows.size())) {
-            return index;
-        }
-        const int col = index - home_rows[static_cast<std::size_t>(r)].first;
-        const HomeRow& next = home_rows[static_cast<std::size_t>(nr)];
-        return next.first + std::min(col, next.count - 1);
+    // The games Home's row shows, as a range of `filtered`: the focused game's console, or every
+    // game while the consoles are mixed.
+    void HomePage(int& first, int& count) const {
+        const HomeSection* section = IsHomeMixed() ? nullptr : SectionAt(selected);
+        first = section ? section->first : 0;
+        count = section ? section->count : static_cast<int>(filtered.size());
     }
 
-    // Where tile `index` sits on screen with the list scrolled to `scroll`.
-    void HomeTilePos(const Grid& grid, int index, float scroll, float& x, float& y) const {
-        const HomeRow& row = home_rows[static_cast<std::size_t>(home_row_of[static_cast<std::size_t>(index)])];
-        x = static_cast<float>(grid.start_x + (index - row.first) * (kTileW + kTileGap));
-        y = HomeViewTop() + row.y - scroll;
+    // Where tile `index` of the page on screen sits across the screen with the row scrolled to
+    // `scroll`.
+    float HomeTileX(int index, float scroll) const {
+        int first, count;
+        HomePage(first, count);
+        return static_cast<float>(kHomeRowX + (index - first) * kHomeStep) - scroll;
+    }
+
+    // L and R: the previous or next console with games. On its own page the cursor goes back to
+    // where it was on that page; in the mixed row it jumps to the console's first game.
+    void StepHomeConsole(int dir) {
+        const HomeSection* section = SectionAt(selected);
+        if (!section) {
+            return;
+        }
+        const int index = static_cast<int>(section - home_sections.data()) + dir;
+        if (index < 0 || index >= static_cast<int>(home_sections.size())) {
+            return;
+        }
+        home_page_cursor[section->system] = selected - section->first;
+        const HomeSection& to = home_sections[static_cast<std::size_t>(index)];
+        int at = 0;
+        if (!IsHomeMixed()) {
+            if (const auto it = home_page_cursor.find(to.system); it != home_page_cursor.end()) {
+                at = it->second;
+            }
+            // The new page slides in from the side it was reached from.
+            page_dir = static_cast<float>(dir);
+            page_anim = 0.0f;
+        }
+        selected = to.first + std::clamp(at, 0, to.count - 1);
     }
 
     // Returns true if the menu should return `result` to the caller.
     bool HandleLibrary(u64 down, u32 nav, MenuResult& result) {
-        const Grid grid = ComputeGrid();
-        const int count = static_cast<int>(filtered.size());
         if (game_menu != GameMenu::None) {
             HandleGameMenu(down, nav);
             return false;
         }
         if (game_moving) {
             HandleGameMove(down, nav);
-            EnsureVisible(grid);
+            EnsureVisible();
             return false;
         }
-        if (count > 0) {
-            if (nav & DirLeft) {
-                selected = std::max(0, selected - 1);
-            }
-            if (nav & DirRight) {
-                selected = std::min(count - 1, selected + 1);
-            }
-            if (nav & DirUp) {
-                selected = RowNeighbour(selected, -1);
-            }
-            if (nav & DirDown) {
-                selected = RowNeighbour(selected, +1);
-            }
-            if (down & HidNpadButton_A) {
-                result = {MenuAction::Launch, games[filtered[selected]].path};
-                return true;
-            }
-            // Guarded so that reaching for the +/- exit combo doesn't flash the menu open.
-            if ((down & HidNpadButton_Plus) && !(held & HidNpadButton_Minus)) {
-                OpenGameMenu(GameMenu::Actions);
-                return false;
-            }
-        }
-        if (count > 0 && (down & HidNpadButton_L) && IsPictureEditingEnabled()) {
-            OpenGameMenu(GameMenu::Picture);
+        if (filtered.empty()) {
+            // Nothing to pick: the cursor waits on the round buttons.
+            EnterRail();
             return false;
         }
-        if (count > 0 && (down & HidNpadButton_R) && IsPictureEditingEnabled() &&
-            Skin::HasGameImage(games[filtered[selected]].path)) {
-            const std::string err = Art::SetGameArt(games[filtered[selected]], "");
-            ShowNotice(err.empty() ? "Picture removed" : err, !err.empty());
+        int first, count;
+        HomePage(first, count);
+        if (nav & DirLeft) {
+            selected = std::max(first, selected - 1);
+        }
+        if (nav & DirRight) {
+            selected = std::min(first + count - 1, selected + 1);
+        }
+        if (down & (HidNpadButton_L | HidNpadButton_R)) {
+            StepHomeConsole((down & HidNpadButton_R) ? 1 : -1);
+        }
+        if (down & HidNpadButton_A) {
+            result = {MenuAction::Launch, games[filtered[selected]].path};
+            return true;
+        }
+        // Guarded so that reaching for the +/- exit combo doesn't flash the menu open.
+        if ((down & HidNpadButton_Plus) && !(held & HidNpadButton_Minus)) {
+            OpenGameMenu(GameMenu::Actions);
+            return false;
         }
         if (down & HidNpadButton_X) {
             search = PromptSearch(search);
             ApplyFilter();
+            return false;
         }
         if (down & HidNpadButton_Y) {
-            // Rescanning the SD card blocks
-            ShowBusy("Refreshing library…");
-            search.clear();
-            Rescan();
-            StartAutoInstall();
-            StartCoverDownload();
+            RefreshLibrary();
+            return false;
         }
-        if (down & HidNpadButton_B) {
+        // Down (or B) goes to the round buttons.
+        if ((nav & DirDown) || (down & HidNpadButton_B)) {
             EnterRail();
         }
-        EnsureVisible(grid);
+        EnsureVisible();
         return false;
+    }
+
+    // Y on Home: reads the SD card again, which blocks.
+    void RefreshLibrary() {
+        ShowBusy("Refreshing library…");
+        search.clear();
+        Rescan();
+        StartAutoInstall();
+        StartCoverDownload();
+    }
+
+    // ---- Home's round buttons ------------------------------------------------------------------
+
+    enum class HomeButton { Systems, Search, Themes, Settings, Paths, Exit, Count };
+    struct HomeButtonLook {
+        Skin::DockIcon icon;
+        const char* label;
+        u32 color;
+    };
+    static const HomeButtonLook& HomeButtonFor(int i) {
+        static const std::array<HomeButtonLook, static_cast<std::size_t>(HomeButton::Count)> kLooks{
+            {
+                {Skin::DockIcon::Systems, "Systems", MakeColor(0xA7, 0x8B, 0xFA)},
+                {Skin::DockIcon::Search, "Search", MakeColor(0x5E, 0xE7, 0xDF)},
+                {Skin::DockIcon::Themes, "Themes", MakeColor(0xF4, 0x72, 0xB6)},
+                {Skin::DockIcon::Settings, "Settings", MakeColor(0xE5, 0xE7, 0xEB)},
+                {Skin::DockIcon::Folder, "Paths", MakeColor(0xFB, 0xBF, 0x24)},
+                {Skin::DockIcon::Power, "Exit", MakeColor(0xFF, 0x6B, 0x6B)},
+            }};
+        return kLooks[static_cast<std::size_t>(i)];
+    }
+    static constexpr int kHomeButtons = static_cast<int>(HomeButton::Count);
+
+    static float HomeButtonX(int i) {
+        return g_screen_w / 2.0f + (i - (kHomeButtons - 1) / 2.0f) * kHomeButtonStep;
+    }
+
+    // The cursor is on the round buttons: left and right pick one, up or B go back to the games.
+    bool HandleHomeButtons(u64 down, u32 nav, MenuResult& result) {
+        if (nav & DirLeft) {
+            home_button = std::max(0, home_button - 1);
+        }
+        if (nav & DirRight) {
+            home_button = std::min(kHomeButtons - 1, home_button + 1);
+        }
+        if (down & HidNpadButton_A) {
+            return PressHomeButton(static_cast<HomeButton>(home_button), result);
+        }
+        if (((nav & DirUp) || (down & HidNpadButton_B)) && !filtered.empty()) {
+            focus = Focus::Content;
+        }
+        return false;
+    }
+
+    bool PressHomeButton(HomeButton button, MenuResult& result) {
+        switch (button) {
+        case HomeButton::Systems:
+            OpenTab(Tab::Systems);
+            break;
+        case HomeButton::Search:
+            search = PromptSearch(search);
+            ApplyFilter();
+            if (!filtered.empty()) {
+                focus = Focus::Content;
+            }
+            break;
+        case HomeButton::Themes:
+            OpenTab(Tab::Settings);
+            SetSettingsPage(Category::Themes);
+            break;
+        case HomeButton::Settings:
+            OpenTab(Tab::Settings);
+            break;
+        case HomeButton::Paths:
+            OpenTab(Tab::Paths);
+            break;
+        case HomeButton::Exit:
+            if (install_active) {
+                NoticeInstallBusy("close EmuSwitch");
+                break;
+            }
+            result = {MenuAction::Exit, {}};
+            return true;
+        case HomeButton::Count:
+            break;
+        }
+        return false;
+    }
+
+    // Opens a page from Home, with the cursor on it.
+    void OpenTab(Tab next) {
+        SetTab(next);
+        rail_sel = tab;
+        focus = Focus::Content;
     }
 
     void OpenSaves() {
@@ -2795,25 +2890,29 @@ private:
         paths_dirty = true;
     }
 
-    void EnsureVisible(const Grid& grid) {
-        if (grid.cols != home_cols) {
-            BuildHomeLayout(); // the menu turned on its side
-        }
-        if (filtered.empty() || home_rows.empty()) {
+    // Scrolls Home's row so the cursor stays in view with a tile of the row either side of it
+    // where there is one. A new page starts scrolled there at once.
+    void EnsureVisible() {
+        if (filtered.empty()) {
             return;
         }
-        const HomeRow& row = home_rows[static_cast<std::size_t>(home_row_of[static_cast<std::size_t>(selected)])];
-        // The first row of a section brings its header along.
-        const bool first_row = home_sections[static_cast<std::size_t>(row.section)].first == row.first;
-        const float top = row.y - (first_row ? static_cast<float>(Skin::kSectionHeaderH) : 14.0f);
-        const float bottom = row.y + kTileH + 14.0f;
-        const float view_h = HomeViewH();
-        if (top < home_top) {
-            home_top = top;
-        } else if (bottom > home_top + view_h) {
-            home_top = bottom - view_h;
+        int first, count;
+        HomePage(first, count);
+        const bool new_page = first != home_page_first;
+        if (new_page) {
+            home_page_first = first;
+            home_scroll = 0.0f;
         }
-        home_top = std::clamp(home_top, 0.0f, std::max(0.0f, home_height + 14.0f - view_h));
+        const float view_w = static_cast<float>(g_screen_w - 2 * kHomeRowX);
+        const float row_w = static_cast<float>(count * kHomeStep - kHomeGap);
+        const float left = static_cast<float>((selected - first) * kHomeStep);
+        home_scroll = std::min(home_scroll, left - kHomeStep);
+        home_scroll = std::max(home_scroll, left + kHomeTile + kHomeStep - view_w);
+        home_scroll = std::clamp(home_scroll, 0.0f, std::max(0.0f, row_w - view_w));
+        if (new_page) {
+            grid_scroll.Snap(home_scroll);
+            cursor_ready = false;
+        }
     }
 
     void HandleTouch() {
@@ -2848,7 +2947,22 @@ private:
         }
         touch_was_down = true;
 
-        if (const int dock_hit = Skin::DockHitTest(canvas, static_cast<int>(kRailItems.size()), tx, ty); dock_hit >= 0) {
+        if (tab == Tab::Library) {
+            // Home has round buttons instead of the dock.
+            for (int i = 0; i < kHomeButtons && game_menu == GameMenu::None && !game_moving; ++i) {
+                const float dx = tx - HomeButtonX(i), dy = static_cast<float>(ty - kHomeButtonY);
+                if (dx * dx + dy * dy <= kHomeButtonD * kHomeButtonD / 4.0f) {
+                    home_button = i;
+                    MenuResult result;
+                    if (PressHomeButton(static_cast<HomeButton>(i), result)) {
+                        pending_exit = true;
+                    }
+                    return;
+                }
+            }
+        } else if (const int dock_hit =
+                       Skin::DockHitTest(canvas, static_cast<int>(kRailItems.size()), tx, ty);
+                   dock_hit >= 0) {
             SetTab(kRailItems[dock_hit].first);
             rail_sel = tab;
             focus = Focus::Content;
@@ -2877,19 +2991,19 @@ private:
             if (game_moving) {
                 return; // Carried with the buttons; A drops it.
             }
-            const Grid grid = ComputeGrid();
             for (int i = 0; i < static_cast<int>(filtered.size()); ++i) {
                 int tile_x, tile_y;
-                if (!TileRect(grid, i, tile_x, tile_y)) {
+                if (!TileRect(i, tile_x, tile_y)) {
                     continue;
                 }
-                if (tx >= tile_x && tx < tile_x + kTileW && ty >= tile_y &&
-                    ty < tile_y + kTileH) {
-                    if (selected == i) {
+                if (tx >= tile_x && tx < tile_x + kHomeTile && ty >= tile_y &&
+                    ty < tile_y + kHomeTile) {
+                    if (selected == i && focus == Focus::Content) {
                         pending_launch = games[filtered[i]].path; // Second tap launches.
                     }
                     selected = i;
-                    EnsureVisible(grid);
+                    focus = Focus::Content;
+                    EnsureVisible();
                     break;
                 }
             }
@@ -2987,18 +3101,19 @@ private:
         }
     }
 
-    // Screen rect of filtered tile `i` given the current scroll.
-    bool TileRect(const Grid& grid, int i, int& out_x, int& out_y) {
-        if (i < 0 || i >= static_cast<int>(home_row_of.size())) {
+    // Screen rect of filtered tile `i` given the current scroll, when it is on screen.
+    bool TileRect(int i, int& out_x, int& out_y) const {
+        int first, count;
+        HomePage(first, count);
+        if (i < first || i >= first + count) {
             return false;
         }
-        float x, y;
-        HomeTilePos(grid, i, grid_scroll.x, x, y);
-        if (y < HomeViewTop() - 8 || y + kTileH > HomeViewBottom() + 8) {
+        const float x = HomeTileX(i, grid_scroll.x);
+        if (x + kHomeTile < 0.0f || x > static_cast<float>(g_screen_w)) {
             return false;
         }
-        out_x = static_cast<int>(x);
-        out_y = static_cast<int>(std::lround(y));
+        out_x = static_cast<int>(std::lround(x));
+        out_y = kHomeRowTop;
         return true;
     }
 
@@ -3376,17 +3491,10 @@ private:
         title = kRailItems[static_cast<std::size_t>(tab)].second;
         switch (tab) {
         case Tab::Library:
-            if (focus == Focus::Content && !filtered.empty()) {
-                const GameEntry& game = games[filtered[static_cast<std::size_t>(selected)]];
-                title = game.title;
-                sub = game_moving ? std::string{"Moving: use the arrows, then A"}
-                                  : std::string{SystemName(game.shown_system)};
-            } else {
-                title = g_nickname;
-                sub = std::to_string(filtered.size()) + (filtered.size() == 1 ? " game" : " games");
-            }
-            if (!search.empty()) {
-                sub = "Search: " + search + "  (" + std::to_string(filtered.size()) + ")";
+            // The console and the focused game's name are on the page itself.
+            title = g_nickname;
+            if (game_moving && !filtered.empty()) {
+                sub = "Moving " + games[filtered[static_cast<std::size_t>(selected)]].title;
             }
             break;
         case Tab::Systems:
@@ -3480,13 +3588,9 @@ private:
 
         // The grid: scroll, the gliding cursor and the focused tile popping up.
         if (tab == Tab::Library && !filtered.empty()) {
-            const Grid grid = ComputeGrid();
-            if (grid.cols != home_cols) {
-                BuildHomeLayout();
-            }
-            grid_scroll.Step(home_top, dt, 320.0f, 34.0f);
-            float tx, ty;
-            HomeTilePos(grid, selected, grid_scroll.x, tx, ty);
+            grid_scroll.Step(home_scroll, dt, 320.0f, 34.0f);
+            const float tx = HomeTileX(selected, grid_scroll.x);
+            const float ty = static_cast<float>(kHomeRowTop);
             if (!cursor_ready) {
                 cursor_x.Snap(tx);
                 cursor_y.Snap(ty);
@@ -3606,7 +3710,9 @@ private:
     void DrawScene(Canvas& c) {
         Skin::DrawBackdrop(c);
         DrawTopBar(c);
-        DrawRail(c, DockStateNow());
+        if (tab != Tab::Library || PerGameOpen()) {
+            DrawRail(c, DockStateNow()); // Home has its round buttons instead
+        }
         {
             // The page slides in from the side it was reached from.
             const float e = EaseOut(page_anim);
@@ -3624,7 +3730,7 @@ private:
                 DrawPathsPage(c);
             }
         }
-        DrawNotice(c);
+        DrawNotice(c, tab == Tab::Library && !PerGameOpen());
         DrawInstallPill(c);
         if (modal_kind == 0) {
             return;
@@ -3785,128 +3891,171 @@ private:
     }
 
     void DrawLibrary(Canvas& c) {
-        const bool content_focus = focus == Focus::Content;
         if (filtered.empty()) {
-            DrawEmptyLibrary(c, paths.roms_dir);
+            if (search.empty()) {
+                DrawEmptyLibrary(c, paths.roms_dir);
+            } else {
+                const std::string line =
+                    "No games match \"" + g_font.Truncate(search, 26, 640) + "\"";
+                g_font_bold.Draw(c, (g_screen_w - g_font_bold.Measure(line, 26)) / 2,
+                                 kHomeRowTop + 110, line, 26, kColText);
+                const char* tip = "Search again, or search for nothing to see every game";
+                g_font.Draw(c, (g_screen_w - g_font.Measure(tip, 17)) / 2, kHomeRowTop + 146, tip,
+                            17, kColTextDim);
+            }
         } else {
-            const Grid grid = ComputeGrid();
-            const int step = kTileH + kTileGap;
-            const float scroll = grid_scroll.x;
-            const int count = static_cast<int>(filtered.size());
-            const int used_w = grid.cols * kTileW + (grid.cols - 1) * kTileGap;
-            const float view_top = static_cast<float>(HomeViewTop());
-            const float view_bottom = static_cast<float>(HomeViewBottom());
-            const float intro = static_cast<float>(g_now - library_intro);
-            // Tiles slide under the profile bar and above the dock, fading as they leave.
-            Canvas::ClipScope clip{c, 0, kContentTop - 20, g_screen_w, ContentBottom() - 16 - (kContentTop - 20)};
-            const auto edge_fade = [&](float fy, float h) {
-                float out = 0.0f;
-                if (fy < view_top - 4) {
-                    out = (view_top - fy) / (step * 0.75f);
-                } else if (fy + h > view_bottom + 4) {
-                    out = (fy + h - view_bottom) / (step * 0.75f);
-                }
-                return std::clamp(1.0f - out, 0.0f, 1.0f);
-            };
-            // On arrival everything rises in, a column and a row at a time.
-            const auto wave_at = [&](float fy, int col) {
-                return EaseOut(intro * 3.4f - (col * 0.055f + ((fy - view_top) / step) * 0.13f));
-            };
-            const auto look_for = [&](int i, int& x, int& y) {
-                float fx, fy;
-                HomeTilePos(grid, i, scroll, fx, fy);
-                x = static_cast<int>(fx);
-                y = static_cast<int>(std::lround(fy));
-                const int col = (x - grid.start_x) / (kTileW + kTileGap);
-                Skin::TileLook look;
-                look.appear = edge_fade(fy, kTileH) * wave_at(fy, col);
-                look.t = AnimTime();
-                look.dim = !content_focus;
-                return look;
-            };
-            // Each console's header: its logo, name and how many games it has.
-            for (const HomeSection& section : home_sections) {
-                const float fy = view_top + section.y - scroll;
-                if (fy > view_bottom + 40.0f || fy + Skin::kSectionHeaderH < view_top - 60.0f) {
-                    continue;
-                }
-                const std::string games_text =
-                    std::to_string(section.count) + (section.count == 1 ? " game" : " games");
-                Skin::DrawSectionHeader(c, SkinFonts(), CardFor(section.system + 1), SystemName(section.system),
-                                        games_text, grid.start_x, static_cast<int>(std::lround(fy)), used_w,
-                                        edge_fade(fy, 40.0f) * wave_at(fy, 0));
-            }
-            for (const HomeRow& row : home_rows) {
-                const float fy = view_top + row.y - scroll;
-                if (fy > view_bottom + step || fy + kTileH < view_top - step) {
-                    continue;
-                }
-                for (int k = 0; k < row.count; ++k) {
-                    const int i = row.first + k;
-                    if (i == selected || i == lift_prev_index) {
-                        continue;
-                    }
-                    int x, y;
-                    const Skin::TileLook look = look_for(i, x, y);
-                    DrawTile(c, games[filtered[static_cast<std::size_t>(i)]], x, y, look);
-                }
-            }
-            // The tile the cursor left settles back; the focused one pops up over everything.
-            if (lift_prev_index >= 0 && lift_prev_index < count && lift_prev_index != selected) {
-                int x, y;
-                Skin::TileLook look = look_for(lift_prev_index, x, y);
-                look.lift = lift_prev;
-                DrawTile(c, games[filtered[static_cast<std::size_t>(lift_prev_index)]], x, y, look);
-            }
-            if (selected >= 0 && selected < count) {
-                int x, y;
-                Skin::TileLook look = look_for(selected, x, y);
-                look.lift = lift.x;
-                look.dim = false;
-                if (game_moving) {
-                    // The carried game glides with the cursor to its new place.
-                    x = static_cast<int>(std::lround(cursor_x.x));
-                    y = static_cast<int>(std::lround(cursor_y.x));
-                }
-                DrawTile(c, games[filtered[static_cast<std::size_t>(selected)]], x, y, look);
-                if (content_focus) {
-                    const float size = kTileW + (kTileFocus - kTileW) * lift.x;
-                    Skin::DrawFocusRing(c, cursor_x.x + kTileW / 2.0f - size / 2,
-                                        cursor_y.x + kTileH / 2.0f - 3.0f * lift.x - size / 2, size, AnimTime(),
-                                        std::clamp(lift.x * 1.6f, 0.0f, 1.0f) * look.appear);
-                }
-                if (game_moving) {
-                    bool left, right, up, down;
-                    GameMoveRoom(left, right, up, down);
-                    Skin::DrawMoveArrows(c, cursor_x.x, cursor_y.x - 3.0f * lift.x, static_cast<float>(kTileW),
-                                         AnimTime(), left, right, up, down);
-                }
-            }
-            DrawScrollbar(c, grid);
+            DrawHomeHeading(c);
+            DrawHomeRow(c);
         }
-        if (focus == Focus::Rail) {
-            DrawRailHints(c);
-        } else if (game_moving) {
-            int hx = HintX();
-            const int hy = g_screen_h - 44;
-            hx += DrawHint(c, hx, hy, "D-Pad", "Move") + 22;
-            hx += DrawHint(c, hx, hy, "L R", "Console") + 22;
-            hx += DrawHint(c, hx, hy, "A", "Done") + 22;
-            DrawHint(c, hx, hy, "B", "Cancel");
-        } else {
-            int hx = HintX();
-            const int hy = g_screen_h - 44;
-            hx += DrawHint(c, hx, hy, "A", "Play") + 22;
-            hx += DrawHint(c, hx, hy, "X", "Search") + 22;
-            hx += DrawHint(c, hx, hy, "Y", "Refresh") + 22;
-            if (IsPictureEditingEnabled()) {
-                hx += DrawHint(c, hx, hy, "L", "Picture") + 22;
-            }
-            hx += DrawHint(c, hx, hy, "+", "Menu") + 22;
-            DrawHint(c, hx, hy, "+ -", "Exit");
-        }
+        DrawHomeButtons(c);
+        // A hairline over the hints, like the console's own Home.
+        c.FillRect(48, g_screen_h - 72, g_screen_w - 96, 1, MakeColor(0xFF, 0xFF, 0xFF, 0x18));
+        DrawHomeHints(c);
         if (game_menu != GameMenu::None) {
             DrawGameMenu(c);
+        }
+    }
+
+    // The console on screen with L and R either side, or "All Games" in the mixed row.
+    void DrawHomeHeading(Canvas& c) {
+        const HomeSection* section = IsHomeMixed() ? nullptr : SectionAt(selected);
+        const int count = section ? section->count : static_cast<int>(filtered.size());
+        std::string detail = std::to_string(count) + (count == 1 ? " game" : " games");
+        if (!search.empty()) {
+            detail = "\"" + g_font.Truncate(search, 15, 360) + "\"  ·  " + detail;
+        }
+        if (!section) {
+            Skin::DrawHomeHeading(c, SkinFonts(), search.empty() ? "All Games" : "Search", detail,
+                                  g_screen_w / 2, kHomeHeadingY);
+            return;
+        }
+        const int index = static_cast<int>(section - home_sections.data());
+        Skin::DrawConsoleSwitch(c, SkinFonts(), CardFor(section->system + 1),
+                                SystemName(section->system), detail, g_screen_w / 2, kHomeHeadingY,
+                                index > 0, index + 1 < static_cast<int>(home_sections.size()));
+    }
+
+    void DrawHomeRow(Canvas& c) {
+        const bool content_focus = focus == Focus::Content;
+        int first, count;
+        HomePage(first, count);
+        const float scroll = grid_scroll.x;
+        const float intro = static_cast<float>(g_now - library_intro);
+        const auto in_page = [&](int i) { return i >= first && i < first + count; };
+        const auto look_for = [&](int i, int& x) {
+            const float fx = HomeTileX(i, scroll);
+            x = static_cast<int>(std::lround(fx));
+            Skin::TileLook look;
+            // On arrival the tiles rise in one after another.
+            const float col = std::max(0.0f, (fx - kHomeRowX) / kHomeStep);
+            look.appear = EaseOut(intro * 3.4f - col * 0.07f);
+            look.t = AnimTime();
+            look.dim = !content_focus;
+            look.size = kHomeTile;
+            look.focus_size = kHomeFocus;
+            return look;
+        };
+        const auto on_screen = [&](int x) { return x < g_screen_w && x + kHomeFocus > 0; };
+        for (int i = first; i < first + count; ++i) {
+            if (i == selected || i == lift_prev_index) {
+                continue;
+            }
+            int x;
+            const Skin::TileLook look = look_for(i, x);
+            if (on_screen(x)) {
+                DrawTile(c, games[filtered[static_cast<std::size_t>(i)]], x, kHomeRowTop, look);
+            }
+        }
+        // The tile the cursor left settles back; the focused one pops up over everything.
+        if (in_page(lift_prev_index) && lift_prev_index != selected) {
+            int x;
+            Skin::TileLook look = look_for(lift_prev_index, x);
+            look.lift = lift_prev;
+            if (on_screen(x)) {
+                DrawTile(c, games[filtered[static_cast<std::size_t>(lift_prev_index)]], x,
+                         kHomeRowTop, look);
+            }
+        }
+        if (!in_page(selected)) {
+            return;
+        }
+        const GameEntry& game = games[filtered[static_cast<std::size_t>(selected)]];
+        int x;
+        Skin::TileLook look = look_for(selected, x);
+        look.lift = lift.x;
+        look.dim = false;
+        if (game_moving) {
+            // The carried game glides with the cursor to its new place.
+            x = static_cast<int>(std::lround(cursor_x.x));
+        }
+        DrawTile(c, game, x, kHomeRowTop, look);
+        if (content_focus) {
+            const float size = kHomeTile + (kHomeFocus - kHomeTile) * lift.x;
+            const float shown = std::clamp(lift.x * 1.6f, 0.0f, 1.0f) * look.appear;
+            Skin::DrawFocusRing(c, cursor_x.x + kHomeTile / 2.0f - size / 2,
+                                kHomeRowTop + kHomeTile / 2.0f - 3.0f * lift.x - size / 2, size,
+                                AnimTime(), shown);
+            // Its name over it.
+            Canvas::FadeScope fade{c, shown};
+            const std::string title = g_font_bold.Truncate(game.title, 21, 520);
+            const int tw = g_font_bold.Measure(title, 21);
+            const int tx =
+                std::clamp(static_cast<int>(std::lround(cursor_x.x)) - 6, 24, g_screen_w - 24 - tw);
+            g_font_bold.Draw(c, tx, kHomeRowTop - 24, title, 21, kColAccent);
+        }
+        if (game_moving) {
+            const bool left = selected > first, right = selected < first + count - 1;
+            Skin::DrawMoveArrows(c, cursor_x.x, kHomeRowTop - 3.0f * lift.x,
+                                 static_cast<float>(kHomeTile), AnimTime(), left, right, false,
+                                 false);
+        }
+    }
+
+    void DrawHomeButtons(Canvas& c) {
+        const bool on_buttons = focus == Focus::Rail;
+        for (int i = 0; i < kHomeButtons; ++i) {
+            const HomeButtonLook& b = HomeButtonFor(i);
+            Skin::DrawRoundButton(c, SkinFonts(), HomeButtonX(i), static_cast<float>(kHomeButtonY),
+                                  static_cast<float>(kHomeButtonD), b.icon, b.color, b.label,
+                                  on_buttons && i == home_button ? 1.0f : 0.0f, AnimTime());
+        }
+    }
+
+    // Hints along the bottom: `left` from the left edge, `right` against the right one.
+    void DrawHintRow(Canvas& c, const std::vector<std::pair<const char*, const char*>>& left,
+                     const std::vector<std::pair<const char*, const char*>>& right) {
+        constexpr int kGap = 22;
+        const int hy = g_screen_h - 44;
+        int hx = HintX();
+        for (const auto& [button, label] : left) {
+            hx += DrawHint(c, hx, hy, button, label) + kGap;
+        }
+        int total = 0;
+        for (const auto& [button, label] : right) {
+            total += DrawHint(c, -4000, -4000, button, label) + kGap; // measured off the canvas
+        }
+        hx = g_screen_w - HintX() - total + kGap;
+        for (const auto& [button, label] : right) {
+            hx += DrawHint(c, hx, hy, button, label) + kGap;
+        }
+    }
+
+    void DrawHomeHints(Canvas& c) {
+        const bool consoles = home_sections.size() > 1;
+        if (focus == Focus::Rail) {
+            if (filtered.empty()) {
+                DrawHintRow(c, {{"A", "Open"}}, {{"+ -", "Exit"}});
+            } else {
+                DrawHintRow(c, {{"A", "Open"}, {"B", "Back"}}, {{"+ -", "Exit"}});
+            }
+        } else if (game_moving) {
+            DrawHintRow(c, {{"<>", "Move"}, {"A", "Done"}, {"B", "Cancel"}}, {{"L R", "Console"}});
+        } else if (consoles) {
+            DrawHintRow(c, {{"A", "Play"}, {"+", "Options"}, {"X", "Search"}, {"Y", "Refresh"}},
+                        {{"L R", "Console"}, {"+ -", "Exit"}});
+        } else {
+            DrawHintRow(c, {{"A", "Play"}, {"+", "Options"}, {"X", "Search"}, {"Y", "Refresh"}},
+                        {{"+ -", "Exit"}});
         }
     }
 
@@ -4166,8 +4315,61 @@ private:
         }
     }
 
+    enum class GameMenuItem {
+        Move,
+        Info,
+        Picture,
+        HomeMenu,
+        Delete,
+        PictureSd,
+        PictureSteamGrid,
+        PictureRemove
+    };
+
+    // The rows of the menu that's open: + on a game, or the Picture options from it.
+    std::vector<GameMenuItem> GameMenuItems() const {
+        using Item = GameMenuItem;
+        if (game_menu == GameMenu::Picture) {
+            std::vector<Item> items{Item::PictureSd, Item::PictureSteamGrid};
+            if (!filtered.empty() &&
+                Skin::HasGameImage(games[filtered[static_cast<std::size_t>(selected)]].path)) {
+                items.push_back(Item::PictureRemove);
+            }
+            return items;
+        }
+        std::vector<Item> items{Item::Move, Item::Info};
+        if (IsPictureEditingEnabled()) {
+            items.push_back(Item::Picture);
+        }
+        items.push_back(Item::HomeMenu);
+        items.push_back(Item::Delete);
+        return items;
+    }
+
+    static const char* GameMenuItemLabel(GameMenuItem item) {
+        switch (item) {
+        case GameMenuItem::Move:
+            return "Move Placement";
+        case GameMenuItem::Info:
+            return "Info";
+        case GameMenuItem::Picture:
+            return "Picture";
+        case GameMenuItem::HomeMenu:
+            return "Add to HOME Menu";
+        case GameMenuItem::Delete:
+            return "Delete";
+        case GameMenuItem::PictureSd:
+            return "SD Card";
+        case GameMenuItem::PictureSteamGrid:
+            return "SteamGridDB";
+        case GameMenuItem::PictureRemove:
+            return "Remove Picture";
+        }
+        return "";
+    }
+
     int GameMenuRows() const {
-        return game_menu == GameMenu::Picture ? 2 : 4;
+        return static_cast<int>(GameMenuItems().size());
     }
 
     void OpenGameMenu(GameMenu menu) {
@@ -4185,7 +4387,8 @@ private:
         }
         // The button that opened a menu closes it again.
         const u64 closers =
-            HidNpadButton_B | (game_menu == GameMenu::Actions ? HidNpadButton_Plus : HidNpadButton_L);
+            static_cast<u64>(HidNpadButton_B) |
+            (game_menu == GameMenu::Actions ? static_cast<u64>(HidNpadButton_Plus) : u64{0});
         if (down & HidNpadButton_A) {
             ChooseGameMenuRow(game_menu_sel);
         } else if (down & closers) {
@@ -4194,26 +4397,39 @@ private:
     }
 
     void ChooseGameMenuRow(int row) {
-        const GameMenu menu = game_menu;
+        const std::vector<GameMenuItem> items = GameMenuItems();
         game_menu = GameMenu::None;
-        if (filtered.empty()) {
+        if (filtered.empty() || row < 0 || row >= static_cast<int>(items.size())) {
             return;
         }
         const GameEntry game = games[filtered[static_cast<std::size_t>(selected)]];
-        if (menu == GameMenu::Actions) {
-            if (row == 0) {
-                BeginGameMove();
-            } else if (row == 1) {
-                OpenDetails();
-            } else if (row == 2) {
-                OpenForwarderConfirm(game);
-            } else {
-                OpenDeleteGameConfirm(game);
-            }
-        } else if (row == 0) {
+        switch (items[static_cast<std::size_t>(row)]) {
+        case GameMenuItem::Move:
+            BeginGameMove();
+            break;
+        case GameMenuItem::Info:
+            OpenDetails();
+            break;
+        case GameMenuItem::Picture:
+            OpenGameMenu(GameMenu::Picture);
+            break;
+        case GameMenuItem::HomeMenu:
+            OpenForwarderConfirm(game);
+            break;
+        case GameMenuItem::Delete:
+            OpenDeleteGameConfirm(game);
+            break;
+        case GameMenuItem::PictureSd:
             PickGamePicture(game);
-        } else {
+            break;
+        case GameMenuItem::PictureSteamGrid:
             PickSteamGridPicture(game);
+            break;
+        case GameMenuItem::PictureRemove: {
+            const std::string err = Art::SetGameArt(game, "");
+            ShowNotice(err.empty() ? "Picture removed" : err, !err.empty());
+            break;
+        }
         }
     }
 
@@ -4348,22 +4564,6 @@ private:
         game_moving = true;
     }
 
-    // Whether the carried game can still go left, right, up or down: in its section, and up or
-    // down into the consoles above and below.
-    void GameMoveRoom(bool& left, bool& right, bool& up, bool& down) const {
-        left = right = up = down = false;
-        const HomeSection* section = SectionAt(selected);
-        if (!section || home_cols <= 0) {
-            return;
-        }
-        const int at = selected - section->first;
-        left = at > 0;
-        right = at < section->count - 1;
-        up = at / home_cols > 0 || section != &home_sections.front();
-        down =
-            at / home_cols < (section->count - 1) / home_cols || section != &home_sections.back();
-    }
-
     void MoveGameTo(int target) {
         const HomeSection* section = SectionAt(selected);
         if (!section || target == selected || target < section->first ||
@@ -4416,29 +4616,12 @@ private:
     }
 
     void HandleGameMove(u64 down, u32 nav) {
-        if (const HomeSection* section = SectionAt(selected); section && home_cols > 0) {
-            const int at = selected - section->first;
-            const int last = section->first + section->count - 1;
-            const std::size_t index = static_cast<std::size_t>(section - home_sections.data());
-            if ((nav & DirLeft) && at > 0) {
+        // Left and right move it along its console's games; L and R move it to another console.
+        if (const HomeSection* section = SectionAt(selected)) {
+            if ((nav & DirLeft) && selected > section->first) {
                 MoveGameTo(selected - 1);
-            } else if ((nav & DirRight) && selected < last) {
+            } else if ((nav & DirRight) && selected < section->first + section->count - 1) {
                 MoveGameTo(selected + 1);
-            } else if (nav & DirUp) {
-                if (at / home_cols > 0) {
-                    MoveGameTo(selected - home_cols);
-                } else if (index > 0) {
-                    // Off the top of its section: to the end of the console above.
-                    MoveGameToConsole(home_sections[index - 1].system, true);
-                }
-            } else if (nav & DirDown) {
-                if (at / home_cols < (section->count - 1) / home_cols) {
-                    // Into a shorter last row, the carried game goes to its end.
-                    MoveGameTo(std::min(selected + home_cols, last));
-                } else if (index + 1 < home_sections.size()) {
-                    // Off the bottom: to the start of the console below.
-                    MoveGameToConsole(home_sections[index + 1].system, false);
-                }
             }
         }
         // L and R step through every console, ones without games too.
@@ -4535,22 +4718,22 @@ private:
         const bool picture = game_menu == GameMenu::Picture;
         const std::string heading = picture ? "Picture for " + game.title : game.title;
         g_font.Draw(c, p.x + 24, p.y + 30, g_font.Truncate(heading, 16, p.w - 48), 16, kColTextDim);
-        static constexpr const char* kActionRows[] = {"Move Placement", "Info", "Add to HOME Menu", "Delete"};
-        static constexpr const char* kPictureRows[] = {"SD Card", "SteamGridDB"};
+        const std::vector<GameMenuItem> items = GameMenuItems();
         const bool no_key = picture && GetSteamGridDbKey().empty();
-        for (int r = 0; r < GameMenuRows(); ++r) {
+        for (int r = 0; r < static_cast<int>(items.size()); ++r) {
+            const GameMenuItem item = items[static_cast<std::size_t>(r)];
             const Rect row = GameMenuRowRect(r);
             const bool on = r == game_menu_sel;
             if (on) {
                 Skin::DrawRow(c, row.x, row.y, row.w, row.h, true);
             }
             // Delete is the one that can't be taken back, so it reads in red.
-            const bool danger = !picture && r == 3;
+            const bool danger = item == GameMenuItem::Delete;
             const u32 color = danger ? (on ? kColError : WithAlpha(kColError, 0xC8))
                                      : (on ? kColText : kColTextDim);
             g_font_bold.Draw(c, row.x + 24, CenterBaseline(row.y, row.h, 21),
-                             (picture ? kPictureRows : kActionRows)[r], 21, color);
-            if (no_key && r == 1) {
+                             GameMenuItemLabel(item), 21, color);
+            if (no_key && item == GameMenuItem::PictureSteamGrid) {
                 const char* note = "Needs an API key";
                 g_font.Draw(c, row.x + row.w - 22 - g_font.Measure(note, 15), CenterBaseline(row.y, row.h, 15), note, 15,
                             kColTextDim);
@@ -5119,19 +5302,6 @@ private:
         return focus == Focus::Content;
     }
 
-    void DrawScrollbar(Canvas& c, const Grid&) {
-        const float view_h = HomeViewH();
-        if (home_height + 14.0f <= view_h) {
-            return;
-        }
-        const int top = HomeViewTop();
-        const int track_h = static_cast<int>(view_h);
-        const int thumb_h = std::max(24, static_cast<int>(track_h * view_h / (home_height + 14.0f)));
-        const float max_scroll = home_height + 14.0f - view_h;
-        const int thumb_y = top + static_cast<int>((track_h - thumb_h) * std::clamp(grid_scroll.x / max_scroll, 0.0f, 1.0f));
-        Skin::DrawScrollbar(c, g_screen_w - 12, top, track_h, thumb_y, thumb_h);
-    }
-
     static constexpr int kRowH = 41;
 
     // Scroll the settings window now that it has overflowed the size of the screen.
@@ -5662,7 +5832,7 @@ private:
     }
 
     void ScrollSelectionsIntoView() {
-        EnsureVisible(ComputeGrid());
+        EnsureVisible();
         ScrollSettingsIntoView();
         ScrollRemapIntoView();
     }
@@ -5707,6 +5877,7 @@ private:
     bool touch_was_down = false;
     // Set by a second touch on the focused tile so Run() can escape the loop.
     std::optional<std::string> pending_launch;
+    bool pending_exit = false; // Home's Exit button was tapped
 };
 
 } // namespace

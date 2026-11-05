@@ -786,8 +786,15 @@ void BuildGeneral(std::vector<SettingEntry>& out) {
                         EntryFlag::None, QuickSection::Display},
                        Settings::values.show_shader_compile_notice));
 
-    t.Group("Quick Menu");
+    t.Group("Home");
     t.Ini("Switch");
+    t << LocalBool("home_mix_consoles",
+                   {"Mix Consoles on Home",
+                    "Shows every console's games together in one row on Home. Off gives each "
+                    "console its own page, switched with L and R."},
+                   IsHomeMixed, SetHomeMixed, false);
+
+    t.Group("Quick Menu");
     t << LocalBool("pause_in_quick_menu",
                    {"Pause In Quick Menu", "Freezes the game while the in-game menu is open.",
                     EntryFlag::None, QuickSection::System},

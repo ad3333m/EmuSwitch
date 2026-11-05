@@ -817,7 +817,8 @@ const char* InstallResultText(InstallResult result) {
         return "it's an encrypted CIA. Decrypt it first (GodMode9 on a 3DS can), then copy it "
                "again";
     default:
-        return "Not a valid CIA";
+        // Often a game for another console (a Switch or Wii U game, say) renamed .cia.
+        return "it isn't a 3DS CIA, or the file is damaged";
     }
 }
 

@@ -82,6 +82,9 @@ void SetMenuInputRotated(bool enabled);
 // Whether the launcher offers the buttons that change system and game pictures.
 bool IsPictureEditingEnabled();
 void SetPictureEditingEnabled(bool enabled);
+// Home lists every console's games in one row instead of a page per console.
+bool IsHomeMixed();
+void SetHomeMixed(bool mixed);
 
 // Whether box art is downloaded for games that have no picture.
 bool IsCoverDownloadEnabled();

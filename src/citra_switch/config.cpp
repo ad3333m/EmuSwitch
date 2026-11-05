@@ -75,6 +75,7 @@ SwitchFrontend::CameraTarget s_camera_target = SwitchFrontend::CameraTarget::All
 int s_menu_rotation = 0;
 bool s_menu_input_rotated = false;
 bool s_picture_editing = true;
+bool s_home_mixed = false;
 bool s_cover_download = true;
 int s_menu_theme = 0;
 bool s_game_cpu_boost = true;
@@ -584,6 +585,14 @@ bool IsPictureEditingEnabled() {
 
 void SetPictureEditingEnabled(bool enabled) {
     s_picture_editing = enabled;
+}
+
+bool IsHomeMixed() {
+    return s_home_mixed;
+}
+
+void SetHomeMixed(bool mixed) {
+    s_home_mixed = mixed;
 }
 
 bool IsCoverDownloadEnabled() {

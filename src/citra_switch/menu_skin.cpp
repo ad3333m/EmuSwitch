@@ -1684,7 +1684,7 @@ int DrawHint(Canvas& c, const Fonts& f, int x, int y, const char* button, const 
 
 void DrawHintBar(Canvas&) {}
 
-void DrawToast(Canvas& c, const Fonts& f, std::string_view text, bool error, float alpha) {
+void DrawToast(Canvas& c, const Fonts& f, std::string_view text, bool error, float alpha, int top) {
     if (alpha <= 0.01f) {
         return;
     }
@@ -1693,7 +1693,7 @@ void DrawToast(Canvas& c, const Fonts& f, std::string_view text, bool error, flo
     const int tw = f.regular->Measure(text, 18);
     const int w = std::min(c.Width() - 60, tw + 64), h = 46;
     const int x = (c.Width() - w) / 2;
-    const int y = c.Height() - kHintH - h - 58 + static_cast<int>(18 * (1 - e));
+    const int y = (top >= 0 ? top : c.Height() - kHintH - h - 58) + static_cast<int>(18 * (1 - e));
     Glass(c, x, y, w, h, h / 2, true, 1.0f);
     if (error) {
         c.RingRoundAA(x, y, w, h, h / 2, 1.4f, WithAlpha(kColError, 0xB0));
@@ -1802,6 +1802,17 @@ void DrawConsoleSwitch(Canvas& c, const Fonts& f, const SystemCard& card, std::s
     }
     x += mid_w + kGap;
     key(x, "R", next);
+    if (!detail.empty()) {
+        const int dw = f.regular->Measure(detail, 15);
+        f.regular->Draw(c, cx - dw / 2, y + kLogoH + 30, detail, 15, kColTextDim);
+    }
+}
+
+void DrawHomeHeading(Canvas& c, const Fonts& f, std::string_view title, std::string_view detail,
+                     int cx, int y) {
+    constexpr int kLogoH = 38; // as DrawConsoleSwitch
+    const int tw = f.bold->Measure(title, 26);
+    f.bold->Draw(c, cx - tw / 2, CenterBaseline(y + 2, kLogoH, 26), title, 26, kColText);
     if (!detail.empty()) {
         const int dw = f.regular->Measure(detail, 15);
         f.regular->Draw(c, cx - dw / 2, y + kLogoH + 30, detail, 15, kColTextDim);

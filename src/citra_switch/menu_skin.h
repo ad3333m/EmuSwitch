@@ -256,12 +256,18 @@ void DrawRoundButton(Canvas& c, const Fonts& f, float cx, float cy, float d, Doc
 // L and R keys either side when there's a console that way.
 void DrawConsoleSwitch(Canvas& c, const Fonts& f, const SystemCard& card, std::string_view name,
                        std::string_view detail, int cx, int y, bool prev, bool next);
+// Home's heading when every console is mixed into one row: `title` centred on cx at y, where
+// DrawConsoleSwitch puts the logo, and `detail` under it.
+void DrawHomeHeading(Canvas& c, const Fonts& f, std::string_view title, std::string_view detail,
+                     int cx, int y);
 
 // ---- small pieces --------------------------------------------------------------------------------------
 int DrawHint(Canvas& c, const Fonts& f, int x, int y, const char* button, const char* label);
 void DrawHintBar(Canvas& c);
-// A notice above the dock; `alpha` 0..1 slides and fades it.
-void DrawToast(Canvas& c, const Fonts& f, std::string_view text, bool error, float alpha = 1.0f);
+// A notice above the dock, or with its top at `top` when that isn't negative; `alpha` 0..1 slides
+// and fades it.
+void DrawToast(Canvas& c, const Fonts& f, std::string_view text, bool error, float alpha = 1.0f,
+               int top = -1);
 void DrawEmptyLibrary(Canvas& c, const Fonts& f, std::string_view roms_dir, float t = 0.0f);
 // A small filled controller glyph (dock icon style), any size.
 void DrawGamepad(Canvas& c, float cx, float cy, float size, u32 color, float stroke);

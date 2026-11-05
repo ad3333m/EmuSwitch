@@ -37,7 +37,7 @@ struct Fit {
     int cover;
     int longest;
 };
-constexpr Fit kGameFit{176, 300};
+constexpr Fit kGameFit{256, 360}; // Home's tiles are 240 pixels, 256 focused
 constexpr Fit kSystemFit{232, 360};
 constexpr int kPreviewSide = 360;
 // Logos are wide and drawn about 40 pixels high: the whole logo within a 560 square is plenty.
