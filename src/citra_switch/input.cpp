@@ -84,12 +84,10 @@ constexpr std::array<Settings::NativeButton::Values, 14> kControlToNative{{
 
 // The default (recommended) control layout.
 constexpr std::array<InputButton, NumMappableControls> kDefaultMapping{{
-    InputButton::A,     InputButton::B,      InputButton::X,     InputButton::Y,
-    InputButton::Up,    InputButton::Down,   InputButton::Left,  InputButton::Right,
-    InputButton::L,     InputButton::R,      InputButton::Start, InputButton::Select,
-    InputButton::ZL,    InputButton::ZR,
+    InputButton::A, InputButton::B, InputButton::X, InputButton::Y, InputButton::Up,
+    InputButton::Down, InputButton::Left, InputButton::Right, InputButton::L, InputButton::R,
+    InputButton::Start, InputButton::Select, InputButton::ZL, InputButton::ZR,
     InputButton::L3, // TogglePointer
-    InputButton::R3, // CycleLayout
     InputButton::ZR, // TouchTap
     // The player can set this one since I don't know what to map it to.
     InputButton::None, // SwapScreens
@@ -333,8 +331,6 @@ const char* ControlName(MappableControl control) {
         return "ZR";
     case MappableControl::TogglePointer:
         return "Toggle Touch Pointer";
-    case MappableControl::CycleLayout:
-        return "Cycle Screen Layout";
     case MappableControl::TouchTap:
         return "Touch Tap (pointer mode)";
     case MappableControl::SwapScreens:
@@ -417,8 +413,6 @@ const char* ControlConfigKey(MappableControl control) {
         return "map_zr";
     case MappableControl::TogglePointer:
         return "map_toggle_pointer";
-    case MappableControl::CycleLayout:
-        return "map_cycle_layout";
     case MappableControl::TouchTap:
         return "map_touch_tap";
     case MappableControl::SwapScreens:

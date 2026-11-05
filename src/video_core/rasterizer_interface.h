@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <functional>
+#include <utility>
 #include "common/common_types.h"
 
 namespace Pica {
@@ -81,6 +82,17 @@ public:
         [[maybe_unused]] const DiskResourceLoadCallback& callback) {}
 
     virtual void SwitchDiskResources([[maybe_unused]] u64 title_id) {}
+
+    /// Builds, on the calling thread, one of the pipelines the disk cache queued up as the game
+    /// started. False when none is left waiting.
+    virtual bool BuildQueuedPipeline() {
+        return false;
+    }
+
+    /// Pipeline builds finished and queued so far.
+    virtual std::pair<std::size_t, std::size_t> PipelineBuildProgress() const {
+        return {0, 0};
+    }
 
     static void SetSwitchDiskResourcesCallback(const DiskResourceLoadCallback& callback) {
         switch_disk_resources_callback = callback;

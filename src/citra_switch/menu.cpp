@@ -917,7 +917,7 @@ InfoCard BuildWelcomeCard() {
         "While a game runs",
         {"- Press + and - together to open the quick menu. Here you can access save states,"
          " cheats, amiibo, screen settings, and more.",
-         "- Click the right stick to cycle through the screen layouts.",
+         "- The quick menu's Display tab changes how the two screens are laid out.",
          "- The touchscreen drives the bottom screen, and a stick or the gyro can drive it "
          "instead."},
         max_w));
@@ -1039,8 +1039,6 @@ public:
                 HandlePresetPicker(down, nav);
             } else if (country_picker_open) {
                 HandleCountryPicker(down, nav);
-            } else if (layout_picker_open) {
-                HandleLayoutPicker(down, nav);
             } else if (remap_open) {
                 HandleRemap(down, nav, dpad_nav);
             } else if (saves_open) {
@@ -1087,10 +1085,9 @@ public:
                 return result;
             }
 
-            if (!update_download_active && !update_installed &&
-                !UpdateModalOpen() && !info_card && !details_open && !saves_open &&
-                !layout_picker_open && !remap_open && !preset_picker_open && !country_picker_open &&
-                !confirm && !PerGameOpen()) {
+            if (!update_download_active && !update_installed && !UpdateModalOpen() && !info_card &&
+                !details_open && !saves_open && !remap_open && !preset_picker_open &&
+                !country_picker_open && !confirm && !PerGameOpen()) {
                 HandleTouch();
             }
             if (pending_launch && install_active) {
@@ -1231,10 +1228,6 @@ private:
     bool saves_present = false; // Whether the emulated card holds a save of the current kind.
     int saves_sel = 0;
     int saves_scroll = 0;
-
-    // R3 screen-layout picker.
-    bool layout_picker_open = false;
-    int layout_picker_sel = 0;
 
     // Preset picker the reset row opens.
     bool preset_picker_open = false;
@@ -1991,11 +1984,6 @@ private:
         scroll = std::clamp(scroll, std::max(0, sel - SettingsVisibleRows() + 1), top);
     }
 
-    void OpenLayoutPicker() {
-        layout_picker_sel = 0;
-        layout_picker_open = true;
-    }
-
     void StepSettingsPage(int dir) {
         int index = static_cast<int>(settings_page);
         for (int i = 0; i < NumCategories; ++i) {
@@ -2010,9 +1998,6 @@ private:
 
     void OpenSettingsModal(SettingsModal modal) {
         switch (modal) {
-        case SettingsModal::LayoutCycle:
-            OpenLayoutPicker();
-            break;
         case SettingsModal::ControllerMap:
             OpenRemap();
             break;
@@ -2315,23 +2300,6 @@ private:
             back();
         }
         return false;
-    }
-
-    void HandleLayoutPicker(u64 down, u32 nav) {
-        const int count = GetScreenLayoutCount();
-        if (nav & DirUp) {
-            layout_picker_sel = (layout_picker_sel - 1 + count) % count;
-        }
-        if (nav & DirDown) {
-            layout_picker_sel = (layout_picker_sel + 1) % count;
-        }
-        if (down & HidNpadButton_A) {
-            SetLayoutCycleMask(GetLayoutCycleMask() ^ (1u << layout_picker_sel));
-            settings_dirty = true;
-        }
-        if (down & HidNpadButton_B) {
-            layout_picker_open = false;
-        }
     }
 
     void OpenPresetPicker() {
@@ -3390,8 +3358,8 @@ private:
         if (confirm) return 6;
         if (remap_open) return 7;
         if (country_picker_open) return 8;
-        if (preset_picker_open) return 9;
-        if (layout_picker_open) return 10;
+        if (preset_picker_open)
+            return 9;
         if (saves_open) return 11;
         if (details_open) return 12;
         return 0;
@@ -3669,9 +3637,6 @@ private:
         }
         if (saves_open && !filtered.empty()) {
             DrawSavesPanel(c);
-        }
-        if (layout_picker_open) {
-            DrawLayoutPicker(c);
         }
         if (preset_picker_open) {
             DrawPresetPicker(c);
@@ -5556,44 +5521,6 @@ private:
         hx += DrawHint(c, hx, hy, "A", "Choose") + 22;
         hx += DrawHint(c, hx, hy, "L R", "Page") + 22;
         DrawHint(c, hx, hy, "B", "Cancel");
-    }
-
-    // A centred modal to choose which layouts R3 cycles through in-game.
-    void DrawLayoutPicker(Canvas& c) {
-        const int count = GetScreenLayoutCount();
-        const int w = std::min(620, g_screen_w - 48);
-        constexpr int row_h = 44;
-        constexpr int top_pad = 78;    // Room for the title and subtitle.
-        constexpr int bottom_pad = 56; // Room for the button hints.
-        const int h = top_pad + count * row_h + bottom_pad;
-        const int x = (g_screen_w - w) / 2;
-        const int y = (g_screen_h - h) / 2;
-        Skin::DrawModal(c, x, y, w, h);
-
-        g_font.Draw(c, x + 24, y + 40, "R3 Screen Layouts", 24, kColText);
-        g_font.Draw(c, x + 24, y + 64, "Choose which layouts R3 cycles through in-game", 16,
-                    kColTextDim);
-
-        for (int i = 0; i < count; ++i) {
-            const int ry = y + top_pad + i * row_h;
-            const int rx = x + 16;
-            const int rw = w - 32;
-            if (i == layout_picker_sel) {
-                Skin::DrawRow(c, rx, ry, rw, row_h - 4, true);
-            }
-            const bool enabled = (GetLayoutCycleMask() & (1u << i)) != 0;
-            g_font.Draw(c, rx + 20, CenterBaseline(ry, row_h - 4, 20), GetScreenLayoutName(i), 20,
-                        kColText);
-            const char* state = enabled ? "On" : "Off";
-            const int sw = g_font.Measure(state, 20);
-            g_font.Draw(c, rx + rw - 24 - sw, CenterBaseline(ry, row_h - 4, 20), state, 20,
-                        enabled ? kColAccent : kColTextDim);
-        }
-
-        int hx = x + 24;
-        const int hy = y + h - 38;
-        hx += DrawHint(c, hx, hy, "A", "Toggle") + 22;
-        DrawHint(c, hx, hy, "B", "Done");
     }
 
     // A near-fullscreen modal that allows rebinding inputs.

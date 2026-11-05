@@ -113,6 +113,27 @@ u32 GetPendingShaderCompiles() {
     return s_pending_shader_compiles.load(std::memory_order_acquire);
 }
 
+namespace {
+std::mutex s_loading_mutex;
+OverlayLoading s_loading;
+} // namespace
+
+void SetOverlayLoading(const OverlayLoading& loading) {
+    std::scoped_lock lock{s_loading_mutex};
+    s_loading = loading;
+    s_loading.active = true;
+}
+
+void ClearOverlayLoading() {
+    std::scoped_lock lock{s_loading_mutex};
+    s_loading = {};
+}
+
+OverlayLoading GetOverlayLoading() {
+    std::scoped_lock lock{s_loading_mutex};
+    return s_loading;
+}
+
 void NotePresentedFrame() {
     s_presented_frames.fetch_add(1, std::memory_order_acq_rel);
 }

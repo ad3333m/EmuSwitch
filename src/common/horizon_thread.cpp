@@ -66,6 +66,9 @@ bool PinCurrentThreadAffinity(std::int32_t preferred_core, std::uint64_t affinit
 }
 
 bool PinAsyncGpuThread() {
+    // Above the shader builders on core 0 ("Low", 51): at libnx's default (59) it only ran when
+    // they had nothing to do, and a game crawled while its shader cache was being built.
+    svcSetThreadPriority(CUR_THREAD_HANDLE, 49);
     return PinCurrentThread(CoreFrontend);
 }
 

@@ -102,6 +102,13 @@ public:
         profile.enable_accurate_mul = _accurate_mul;
     }
 
+    /// Builds one pipeline still queued (the cache warming up as a game starts) on the calling
+    /// thread. False when none is waiting.
+    bool BuildQueuedPipeline();
+
+    /// Pipeline builds finished, and queued, since this cache was made.
+    std::pair<std::size_t, std::size_t> PipelineBuildProgress() const;
+
 private:
     friend ShaderDiskCache;
 

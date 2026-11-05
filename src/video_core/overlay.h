@@ -72,6 +72,19 @@ void NotifyShaderCompileBegin();
 void NotifyShaderCompileEnd(u32 count = 1);
 u32 GetPendingShaderCompiles();
 
+// A loading screen over the black while a game gets ready: a title, a detail line under its
+// progress bar and how far along it is (0..1, or below 0 for no bar). Drawn only while the
+// picture is faded all the way out.
+struct OverlayLoading {
+    bool active = false;
+    std::string title;
+    std::string detail;
+    float progress = -1.0f;
+};
+void SetOverlayLoading(const OverlayLoading& loading);
+void ClearOverlayLoading();
+OverlayLoading GetOverlayLoading();
+
 // Frames put on screen, and draws skipped because their pipeline was still building. Both only
 // ever count up, so the frontend can tell when a game's frames have started coming out whole.
 void NotePresentedFrame();

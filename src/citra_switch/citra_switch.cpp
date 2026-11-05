@@ -241,9 +241,17 @@ void RunGame(PadState& pad, const std::string& rom) {
             // Emulator actions are edge-detected in the remappable InputButton space.
             const u64 input_pressed = state.buttons & ~prev_input;
 
+            // While the loading screen is up the game hasn't started: B starts it without
+            // waiting for the rest of its graphics, and the quick menu stays shut.
+            const bool loading = SwitchFrontend::IsGameLoading();
+            if (loading && (pressed & HidNpadButton_B) != 0) {
+                SwitchFrontend::SkipGameLoading();
+            }
+
             // The +/- chord toggles the in-game quick menu.
             constexpr u64 chord = HidNpadButton_Plus | HidNpadButton_Minus;
-            const bool chord_edge = (held & chord) == chord && (prev_held & chord) != chord;
+            const bool chord_edge =
+                !loading && (held & chord) == chord && (prev_held & chord) != chord;
             if (chord_edge) {
                 SwitchFrontend::ToggleQuickMenu();
             }
@@ -301,10 +309,6 @@ void RunGame(PadState& pad, const std::string& rom) {
                 using SwitchFrontend::ButtonMask;
                 using SwitchFrontend::GetMapping;
                 using SwitchFrontend::MappableControl;
-                // The button bound to Cycle Screen Layout (R3 by default) steps the layout.
-                if ((input_pressed & ButtonMask(GetMapping(MappableControl::CycleLayout))) != 0) {
-                    SwitchFrontend::CycleScreenLayout();
-                }
                 // The button bound to Toggle Touch Pointer (L3 by default) toggles pointer mode.
                 if ((input_pressed & ButtonMask(GetMapping(MappableControl::TogglePointer))) != 0) {
                     SwitchFrontend::TogglePointerMode();

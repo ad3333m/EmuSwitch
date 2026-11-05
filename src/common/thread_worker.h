@@ -156,6 +156,40 @@ public:
         return dropped.size() + dropped_urgent.size();
     }
 
+    // Runs the next waiting request on the calling thread rather than a worker's, so other threads
+    // can help get through a long queue. False when nothing was waiting.
+    bool RunOneOnCaller() {
+        if constexpr (with_state) {
+            return false;
+        } else {
+            Task task;
+            {
+                std::unique_lock lock{queue_mutex};
+                std::queue<Task>& from = urgent_requests.empty() ? requests : urgent_requests;
+                if (from.empty()) {
+                    return false;
+                }
+                task = std::move(from.front());
+                from.pop();
+            }
+            task();
+            {
+                std::unique_lock lock{queue_mutex};
+                ++work_done;
+            }
+            wait_condition.notify_all();
+            return true;
+        }
+    }
+
+    // How much work has finished, and how much was ever queued.
+    std::size_t WorkDone() const noexcept {
+        return work_done.load();
+    }
+    std::size_t WorkScheduled() const noexcept {
+        return work_scheduled.load();
+    }
+
     void WaitForRequests(std::stop_token stop_token = {}) {
         std::stop_callback callback(stop_token, [this] {
             for (auto& thread : threads) {

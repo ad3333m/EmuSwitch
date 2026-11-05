@@ -12,6 +12,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <fmt/format.h>
 
@@ -105,7 +106,7 @@ void RegisterMovieCpuThrottle(Core::System& system) {
     });
 }
 
-// The screen arrangements R3 cycles through.
+// The screen arrangements the quick menu offers.
 struct ScreenLayoutPreset {
     Settings::LayoutOption layout;
     bool swap_screen;
@@ -165,9 +166,6 @@ constexpr int kScreenGapStep = 4;
 
 // Kept consistent with Settings so the first press advances past the boot default.
 std::size_t s_layout_index = 0;
-
-// Bitmask of presets R3 cycles through. Bit i set means preset i is in the rotation.
-std::atomic<std::uint32_t> s_layout_cycle_mask{(1u << s_layout_presets.size()) - 1};
 
 // Applies the preset at s_layout_index and requests a framebuffer relayout.
 void ApplyCurrentLayout() {
@@ -280,6 +278,93 @@ void PumpReveal() {
     }
 }
 
+// ---- The loading screen --------------------------------------------------------------------
+// A game used to start as soon as its shader cache was read, with every pipeline in it still to
+// build on one background thread: until that finished it ran slowly, with pieces missing. Now
+// the pipelines are built first, behind a loading screen the game's renderer draws over the
+// black, with this thread and core 0 helping the builder (nothing else runs yet). B starts the
+// game at once and leaves the rest to build in the background.
+
+std::atomic<bool> s_loading_screen{false};
+std::atomic<bool> s_skip_loading{false};
+constexpr auto kLoadingFrameInterval = std::chrono::milliseconds(50);
+
+class LoadingScreen {
+public:
+    explicit LoadingScreen(Core::System& system_) : system{system_} {
+        s_skip_loading = false;
+        s_loading_screen = true;
+    }
+    ~LoadingScreen() {
+        VideoCore::ClearOverlayLoading();
+        s_loading_screen = false;
+    }
+    LoadingScreen(const LoadingScreen&) = delete;
+    LoadingScreen& operator=(const LoadingScreen&) = delete;
+
+    // Updates what it says, and puts a frame up now and then so it moves.
+    void Show(std::string detail, float progress) {
+        VideoCore::OverlayLoading loading;
+        loading.title = "Getting the game ready";
+        loading.detail = std::move(detail);
+        loading.progress = progress;
+        VideoCore::SetOverlayLoading(loading);
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_frame) {
+            next_frame = now + kLoadingFrameInterval;
+            Core::PerfStats::game_frames_updated = true;
+            system.GPU().SwapBuffers();
+        }
+    }
+
+private:
+    Core::System& system;
+    std::chrono::steady_clock::time_point next_frame{};
+};
+
+void WarmUpGraphics(Core::System& system, LoadingScreen& screen) {
+    VideoCore::RasterizerInterface* rasterizer = system.GPU().Renderer().Rasterizer();
+    auto [done, total] = rasterizer->PipelineBuildProgress();
+    if (done >= total) {
+        return;
+    }
+    const std::size_t first = done;
+    const auto began = std::chrono::steady_clock::now();
+    LOG_INFO(Frontend, "Building {} pipelines from the shader cache before the game starts",
+             total - first);
+    std::atomic<bool> finished{false};
+    // Core 0 lends a hand. Below the async GPU thread there, which keeps the screen moving.
+    std::thread helper([rasterizer, &finished] {
+        Common::SetCurrentThreadName("PipelineHelper");
+        Common::Horizon::PinCurrentThread(Common::Horizon::CoreFrontend);
+        Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
+        while (!finished.load(std::memory_order_relaxed) && rasterizer->BuildQueuedPipeline()) {
+        }
+    });
+    while (!s_stop && !s_skip_loading) {
+        const bool built = rasterizer->BuildQueuedPipeline();
+        std::tie(done, total) = rasterizer->PipelineBuildProgress();
+        const std::size_t count = total - first;
+        const std::size_t ready = std::min(done, total) - first;
+        screen.Show(fmt::format("Building graphics: {} of {}     B  Start now", ready, count),
+                    count == 0 ? 1.0f : static_cast<float>(ready) / static_cast<float>(count));
+        if (done >= total) {
+            break;
+        }
+        if (!built) {
+            // The last few are on the other threads.
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    finished = true;
+    helper.join();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - began)
+                        .count();
+    LOG_INFO(Frontend, "Pipelines ready in {} ms{}", ms,
+             s_skip_loading ? " (skipped, the rest build while the game runs)" : "");
+}
+
 // Turns a completed save state request into an on-screen message.
 void ReportSaveStateEvent(Core::System& system) {
     const auto event = system.TakeSaveStateEvent();
@@ -287,6 +372,11 @@ void ReportSaveStateEvent(Core::System& system) {
         return;
     }
     if (event->loading && event->success) {
+        // The rebuilt renderer queued its shader cache again: built before the game goes on.
+        {
+            LoadingScreen screen{system};
+            WarmUpGraphics(system, screen);
+        }
         ArmReveal();
     } else {
         // A save only dimmed the picture (see the quick menu), and a failed load left it as it was.
@@ -405,10 +495,17 @@ void EmuThread(std::string path) {
         system.GetAppLoader().ReadProgramId(program_id);
         system.GPU().ApplyPerProgramSettings(program_id);
 
-        // Load any cached disk shaders
+        // Load any cached disk shaders, then build them, behind the loading screen.
+        LoadingScreen screen{system};
         system.GPU().Renderer().Rasterizer()->LoadDefaultDiskResources(
-            s_stop,
-            [](VideoCore::LoadCallbackStage, std::size_t, std::size_t, const std::string&) {});
+            s_stop, [&screen](VideoCore::LoadCallbackStage stage, std::size_t value,
+                              std::size_t total, const std::string&) {
+                if (stage == VideoCore::LoadCallbackStage::Build && total > 0) {
+                    screen.Show("Reading saved shaders",
+                                static_cast<float>(value) / static_cast<float>(total));
+                }
+            });
+        WarmUpGraphics(system, screen);
     }
 
     LOG_INFO(Frontend, "Emulation started (program id {:016X})", program_id);
@@ -532,6 +629,14 @@ bool IsRunning() {
     return !s_stop;
 }
 
+bool IsGameLoading() {
+    return s_loading_screen.load();
+}
+
+void SkipGameLoading() {
+    s_skip_loading = true;
+}
+
 void SetEmulationPaused(bool paused) {
     s_paused.store(paused, std::memory_order_relaxed);
 }
@@ -627,25 +732,6 @@ bool RequestLayoutUpdate() {
     }
     s_layout_update_pending.store(true, std::memory_order_release);
     return true;
-}
-
-void CycleScreenLayout() {
-    auto& system = Core::System::GetInstance();
-    if (!system.IsPoweredOn()) {
-        return;
-    }
-
-    const std::uint32_t mask = s_layout_cycle_mask.load(std::memory_order_relaxed);
-    const int count = static_cast<int>(s_layout_presets.size());
-    // Advance to the next preset that is enabled in R3's rotation.
-    for (int step = 1; step <= count; ++step) {
-        const int idx = (static_cast<int>(s_layout_index) + step) % count;
-        if ((mask & (1u << idx)) != 0) {
-            s_layout_index = static_cast<std::size_t>(idx);
-            ApplyCurrentLayout();
-            return;
-        }
-    }
 }
 
 void ToggleSwapScreens() {
@@ -783,15 +869,6 @@ const char* GetScreenLayoutName(int index) {
         return "";
     }
     return s_layout_presets[index].name;
-}
-
-std::uint32_t GetLayoutCycleMask() {
-    return s_layout_cycle_mask.load(std::memory_order_relaxed);
-}
-
-void SetLayoutCycleMask(std::uint32_t mask) {
-    const std::uint32_t all = (1u << s_layout_presets.size()) - 1;
-    s_layout_cycle_mask.store(mask & all, std::memory_order_relaxed);
 }
 
 bool IsMovieThrottleEnabled() {

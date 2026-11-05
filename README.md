@@ -62,7 +62,7 @@ Dekopon: they have nothing to do with it.
 - Full gyro support
 - CIA installation support
 - Switch software (and hardware) keyboard support
-- Multiple screen layouts via R3 (press the right stick)
+- Multiple screen layouts, picked in the quick menu
 - Virtual touch input
 - Full button remapping support
 - In-game menu accessible via `+` and `-`

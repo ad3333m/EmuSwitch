@@ -192,6 +192,14 @@ PipelineCache::~PipelineCache() {
     SaveDriverPipelineDiskCache();
 }
 
+bool PipelineCache::BuildQueuedPipeline() {
+    return pipeline_workers.RunOneOnCaller();
+}
+
+std::pair<std::size_t, std::size_t> PipelineCache::PipelineBuildProgress() const {
+    return {pipeline_workers.WorkDone(), pipeline_workers.WorkScheduled()};
+}
+
 void PipelineCache::WaitForCompileWorkers() {
     shader_workers.WaitForRequests();
     pipeline_workers.WaitForRequests();

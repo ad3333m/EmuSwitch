@@ -197,12 +197,14 @@ bool BootRom(const std::string& rom_arg);
 // True while the emulation thread is running.
 bool IsRunning();
 
+// Whether the game's loading screen is up (its graphics are being built before it starts), and
+// a way to start the game without waiting for them.
+bool IsGameLoading();
+void SkipGameLoading();
+
 // Freezes the guest between run loop slices, while the frontend keeps presenting the last frame.
 void SetEmulationPaused(bool paused);
 bool IsEmulationPaused();
-
-// Advances the screen layout to the next preset while a game runs.
-void CycleScreenLayout();
 
 // Steps the screen layout by `delta` presets and applies it live.
 void StepScreenLayout(int delta);
@@ -238,7 +240,7 @@ bool DisplayFollowsDockState();
 // The name of the currently selected screen layout preset.
 const char* CurrentScreenLayoutName();
 
-// The number of screen layout presets R3 and the quick menu can select.
+// The number of screen layout presets the quick menu can select.
 int GetScreenLayoutCount();
 
 // The display name of preset `index` or "" if out of range.
@@ -291,10 +293,6 @@ const char* DsScreenGapName(int gap);
 // The DeSmuME option values for them, or null for "leave it".
 const char* DsScreenLayoutValue(int layout);
 const char* DsScreenGapValue(int gap);
-
-// Bitmask of presets included in R3's cycle (bit i = preset i).
-std::uint32_t GetLayoutCycleMask();
-void SetLayoutCycleMask(std::uint32_t mask);
 
 // Experimental movie playback throttle. Disabled by default.
 bool IsMovieThrottleEnabled();

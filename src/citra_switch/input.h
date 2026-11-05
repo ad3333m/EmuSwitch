@@ -51,7 +51,6 @@ enum class MappableControl : std::uint8_t {
     ZL,
     ZR,
     TogglePointer,
-    CycleLayout,
     TouchTap,
     SwapScreens,
     Count,

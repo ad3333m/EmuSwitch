@@ -12,6 +12,7 @@
 
 #include "common/common_types.h"
 #include "common/math_util.h"
+#include "video_core/overlay.h"
 #include "video_core/renderer_base.h"
 #ifdef HAVE_LIBRETRO
 #include "citra_libretro/libretro_vk.h"
@@ -136,6 +137,8 @@ private:
 
     OverlayDraw PrepareQuickMenu(const Layout::FramebufferLayout& layout, Frame* frame);
     OverlayDraw PrepareFade(const Layout::FramebufferLayout& layout, Frame* frame, float alpha);
+    OverlayDraw PrepareLoading(const Layout::FramebufferLayout& layout, Frame* frame,
+                               const VideoCore::OverlayLoading& loading);
 
     bool UploadOverlayVertices(Frame* frame, const std::vector<float>& verts, OverlayDraw& overlay);
 

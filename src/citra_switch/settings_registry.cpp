@@ -661,25 +661,6 @@ SettingEntry UniqueDataEntry(UniqueDataFile file, const char* description) {
                  [slot] { return s_unique_data_status[slot]; });
 }
 
-SettingEntry LayoutCycleEntry() {
-    SettingEntry entry = Modal({"R3 Screen Layouts",
-                                "Which screen arrangements the R3 button cycles between in game."},
-                               SettingsModal::LayoutCycle, [] {
-                                   const int total = GetScreenLayoutCount();
-                                   const std::uint32_t mask = GetLayoutCycleMask();
-                                   int enabled = 0;
-                                   for (int i = 0; i < total; ++i) {
-                                       enabled += (mask & (1u << i)) != 0 ? 1 : 0;
-                                   }
-                                   return std::to_string(enabled) + " of " + std::to_string(total);
-                               });
-    PersistLocal<int>(
-        entry, "layout_cycle_mask", [] { return static_cast<int>(GetLayoutCycleMask()); },
-        [](int mask) { SetLayoutCycleMask(static_cast<std::uint32_t>(mask)); },
-        (1 << GetScreenLayoutCount()) - 1);
-    return entry;
-}
-
 SettingEntry ClearShaderCacheEntry() {
     return Modal({"Clear Shader Cache",
                   "Deletes every game's compiled shaders. Expect stutters on the next run."},
@@ -1085,7 +1066,6 @@ void BuildLayout(std::vector<SettingEntry>& out) {
                     "Turns the d-pad with the menu, for holding the console sideways.",
                     EntryFlag::None, QuickSection::Display},
                    IsMenuInputRotated, SetMenuInputRotated, false);
-    t << LayoutCycleEntry();
 
     // Last on the page, where it's easy to find.
     t.Group("Pictures");

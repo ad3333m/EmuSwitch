@@ -45,7 +45,6 @@ const char* QuickSectionName(QuickSection section);
 
 enum class SettingsModal {
     None,
-    LayoutCycle,
     ControllerMap,
     LogFilter,
     ResetDefaults,

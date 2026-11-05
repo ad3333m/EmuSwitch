@@ -47,6 +47,12 @@ public:
     void TickFrame();
     void LoadDefaultDiskResources(const std::atomic_bool& stop_loading,
                                   const VideoCore::DiskResourceLoadCallback& callback) override;
+    bool BuildQueuedPipeline() override {
+        return pipeline_cache.BuildQueuedPipeline();
+    }
+    std::pair<std::size_t, std::size_t> PipelineBuildProgress() const override {
+        return pipeline_cache.PipelineBuildProgress();
+    }
 
     void DrawTriangles() override;
     void FlushAll() override;
