@@ -48,9 +48,10 @@ git -C externals/nxvk log -1 --format='NXVK %H, build stamp %cd'
 SOURCE_DATE_EPOCH="$NXVK_EPOCH" make -C externals/nxvk driver CONTAINER=
 test -f externals/nxvk/switch/build/cross/src/nouveau/vulkan/libnvk.a
 # The stamp that went into the driver, and so into its cache UUID: the NXVK commit's time (UTC).
-echo "NXVK build stamp in libnvk.a:"
-grep -a -o -E '[A-Z][a-z]{2} [ 0-9][0-9] [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}' \
-    externals/nxvk/switch/build/cross/src/nouveau/vulkan/libnvk.a | sort -u | head -3 || true
+# Meson's libnvk.a is a thin archive, so it's read from the objects themselves.
+echo "NXVK build stamp:"
+grep -r -a -o -h -E '[A-Z][a-z]{2} [ 0-9][0-9] [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}' \
+    externals/nxvk/switch/build/cross/src/nouveau/vulkan/libnvk.a.p/ | sort -u | head -3 || true
 
 # 4. EmuSwitch's other emulators, bundled in the romfs as emus/<system>.nro.
 EMUS="$ROOT/dist/emuswitch-romfs/emus"
