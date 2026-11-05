@@ -200,8 +200,9 @@ bool BootRom(const std::string& rom_arg);
 // True while the emulation thread is running.
 bool IsRunning();
 
-// Whether the game's loading screen is up (its graphics are being built before it starts), and
-// a way to start the game without waiting for them.
+// Whether the game's graphics are being built before it starts (the quick menu waits for that),
+// and a way to start the game without waiting for them, which only works once the loading
+// screen saying so is up.
 bool IsGameLoading();
 void SkipGameLoading();
 

@@ -109,15 +109,16 @@ public:
     /// Pipeline builds finished, and queued, since this cache was made.
     std::pair<std::size_t, std::size_t> PipelineBuildProgress() const;
 
+    /// Stores the driver's pipeline cache (the compiled shaders) if it gained anything since it
+    /// was loaded or last stored.
+    void SaveDriverPipelineDiskCache();
+
 private:
     friend ShaderDiskCache;
 
     /// Loads the driver pipeline cache
     void LoadDriverPipelineDiskCache(const std::atomic_bool& stop_loading = std::atomic_bool{false},
                                      const VideoCore::DiskResourceLoadCallback& callback = {});
-
-    /// Stores the generated pipeline cache
-    void SaveDriverPipelineDiskCache();
 
     /// Loads the shader disk cache
     void LoadDiskCache(const std::atomic_bool& stop_loading = std::atomic_bool{false},

@@ -46,18 +46,6 @@ u32 AttribBytes(Pica::PipelineRegs::VertexAttributeFormat format, u32 size) {
     return 0;
 }
 
-AttribLoadFlags MakeAttribLoadFlag(Pica::PipelineRegs::VertexAttributeFormat format) {
-    switch (format) {
-    case Pica::PipelineRegs::VertexAttributeFormat::BYTE:
-    case Pica::PipelineRegs::VertexAttributeFormat::SHORT:
-        return AttribLoadFlags::Sint;
-    case Pica::PipelineRegs::VertexAttributeFormat::UBYTE:
-        return AttribLoadFlags::Uint;
-    default:
-        return AttribLoadFlags::Float;
-    }
-}
-
 std::size_t GetCompileWorkerCount() {
 #ifdef __SWITCH__
     // Horizon only grants cores 0-2, of which core 1 is audio and core 2 is the guest JIT.
@@ -325,7 +313,12 @@ void PipelineCache::LoadDriverPipelineDiskCache(
     }
 
     if (!IsCacheValid(cache_data)) {
-        LOG_WARNING(Render_Vulkan, "Pipeline cache invalid, removing");
+        // A driver update brings a new cache UUID, and with it a start that compiles everything.
+        std::string uuid;
+        for (const u8 byte : instance.GetPipelineCacheUUID()) {
+            uuid += fmt::format("{:02x}", byte);
+        }
+        LOG_WARNING(Render_Vulkan, "Pipeline cache invalid, removing (driver cache UUID {})", uuid);
         cache_file.Close();
         FileUtil::Delete(cache_file_path);
         load_cache(false);
@@ -358,8 +351,15 @@ void PipelineCache::SaveDriverPipelineDiskCache() {
 
     // Read before the file is opened, which empties it. Nothing new was built if the size didn't
     // change (a pipeline cache only gains entries), and rewriting it would only slow down
-    // closing the game.
+    // closing the game. The size alone is asked for first: the data is the whole cache, often
+    // megabytes, and this runs at every start too.
     const vk::Device device = instance.GetDevice();
+    std::size_t cache_size = 0;
+    if (device.getPipelineCacheData(*driver_pipeline_cache, &cache_size, nullptr) !=
+            vk::Result::eSuccess ||
+        cache_size == loaded_driver_cache_size) {
+        return;
+    }
     const auto cache_data = device.getPipelineCacheData(*driver_pipeline_cache);
     if (cache_data.size() == loaded_driver_cache_size) {
         return;
@@ -375,6 +375,10 @@ void PipelineCache::SaveDriverPipelineDiskCache() {
         LOG_ERROR(Render_Vulkan, "Error during pipeline cache write");
         return;
     }
+    // What's on the card now; the next call only writes again if more was built since.
+    loaded_driver_cache_size = cache_data.size();
+    LOG_INFO(Render_Vulkan, "Stored the driver pipeline cache for title_id={:016X} ({} KB)",
+             program_id, cache_data.size() / 1024);
 }
 
 void PipelineCache::LoadDiskCache(const std::atomic_bool& stop_loading,
@@ -636,40 +640,7 @@ bool PipelineCache::BindPipeline(PipelineInfo& info, bool wait_built) {
     return true;
 }
 
-ExtraVSConfig PipelineCache::CalcExtraConfig(const PicaVSConfig& config) {
-    auto res = ExtraVSConfig();
-
-    // Enable the geometry-shader only if we are actually doing per-fragment lighting
-    // and care about proper quaternions. Otherwise just use standard vertex+fragment shaders.
-    // We also don't need the geometry shader if we have the barycentric extension.
-    const bool use_geometry_shader = instance.UseGeometryShaders() &&
-                                     !config.state.lighting_disable &&
-                                     !instance.IsFragmentShaderBarycentricSupported();
-
-    res.use_clip_planes = instance.IsShaderClipDistanceSupported();
-    res.use_geometry_shader = use_geometry_shader;
-    res.sanitize_mul = profile.enable_accurate_mul;
-    res.separable_shader = true;
-    res.load_flags.fill(AttribLoadFlags::Float);
-
-    for (u32 i = 0; i < config.state.used_input_vertex_attributes; i++) {
-        const auto& attr = config.state.input_vertex_attributes[i];
-        const u32 location = attr.location;
-        const Pica::PipelineRegs::VertexAttributeFormat type =
-            static_cast<Pica::PipelineRegs::VertexAttributeFormat>(attr.type);
-        const FormatTraits& traits = instance.GetTraits(type, attr.size);
-        AttribLoadFlags& flags = res.load_flags[location];
-
-        if (traits.needs_conversion) {
-            flags = MakeAttribLoadFlag(type);
-        }
-        if (traits.needs_emulation) {
-            flags |= AttribLoadFlags::ZeroW;
-        }
-    }
-
-    return res;
-}
+// CalcExtraConfig() is in vk_shader_config.cpp, which the shader cache version hashes.
 
 bool PipelineCache::UseProgrammableVertexShader(const Pica::RegsInternal& regs,
                                                 Pica::ShaderSetup& setup,

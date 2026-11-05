@@ -5,17 +5,21 @@ generate_build_info()
 
 # The variable SRC_DIR must be passed into the script (since it uses the current build directory for all values of CMAKE_*_DIR)
 set(VIDEO_CORE "${CMAKE_SOURCE_DIR}/src/video_core")
+# The files that shape the code of the shaders the disk caches keep. When one changes, every
+# player's cache is regenerated, which on the Switch makes the next start of every game compile
+# all of its shaders again, so only those files are listed. The Vulkan pipeline cache and disk
+# cache code is left out: the cache files have their own format versions (CACHE_FILE_VERSION and
+# each entry's EXPECTED_VERSION, bump them when the layout changes) and keep the shader profile
+# they were made with, which is compared when they are read; vk_shader_config.cpp holds the part
+# of the pipeline cache that goes into the shaders' code.
 set(HASH_FILES
     "${VIDEO_CORE}/renderer_opengl/gl_shader_disk_cache.cpp"
     "${VIDEO_CORE}/renderer_opengl/gl_shader_disk_cache.h"
     "${VIDEO_CORE}/renderer_opengl/gl_shader_util.cpp"
     "${VIDEO_CORE}/renderer_opengl/gl_shader_util.h"
+    "${VIDEO_CORE}/renderer_vulkan/vk_shader_config.cpp"
     "${VIDEO_CORE}/renderer_vulkan/vk_shader_util.cpp"
     "${VIDEO_CORE}/renderer_vulkan/vk_shader_util.h"
-    "${VIDEO_CORE}/renderer_vulkan/vk_shader_disk_cache.cpp"
-    "${VIDEO_CORE}/renderer_vulkan/vk_shader_disk_cache.h"
-    "${VIDEO_CORE}/renderer_vulkan/vk_pipeline_cache.cpp"
-    "${VIDEO_CORE}/renderer_vulkan/vk_pipeline_cache.h"
     "${VIDEO_CORE}/shader/generator/glsl_fs_shader_gen.cpp"
     "${VIDEO_CORE}/shader/generator/glsl_fs_shader_gen.h"
     "${VIDEO_CORE}/shader/generator/glsl_shader_decompiler.cpp"

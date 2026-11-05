@@ -94,6 +94,10 @@ public:
         return {0, 0};
     }
 
+    /// Writes what the graphics driver compiled to the disk cache now, rather than only when the
+    /// renderer closes, so it isn't lost if the app is closed or crashes in the meantime.
+    virtual void SaveDriverCache() {}
+
     static void SetSwitchDiskResourcesCallback(const DiskResourceLoadCallback& callback) {
         switch_disk_resources_callback = callback;
     }

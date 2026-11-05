@@ -38,8 +38,19 @@ fi
 ln -sfn "$ROOT/externals/nxvk/switch" /work/switch
 # Its Makefile chains native tools -> Rust std sysroot -> configure -> driver archives.
 # CONTAINER= runs each step directly, since we're already inside the toolchain image.
-make -C externals/nxvk driver CONTAINER=
+# Horizon has no ELF build-id, so NXVK makes its pipeline cache UUID from __DATE__ and __TIME__.
+# Built fresh for every release, that threw away every game's driver pipeline cache with each
+# EmuSwitch update, and the next start of every game compiled all of its shaders again. GCC
+# takes those macros from SOURCE_DATE_EPOCH: pinned to the NXVK commit, the caches are kept
+# until the driver itself changes.
+NXVK_EPOCH="$(git -C externals/nxvk log -1 --format=%ct)"
+git -C externals/nxvk log -1 --format='NXVK %H, build stamp %cd'
+SOURCE_DATE_EPOCH="$NXVK_EPOCH" make -C externals/nxvk driver CONTAINER=
 test -f externals/nxvk/switch/build/cross/src/nouveau/vulkan/libnvk.a
+# The stamp that went into the driver, and so into its cache UUID: the NXVK commit's time (UTC).
+echo "NXVK build stamp in libnvk.a:"
+grep -a -o -E '[A-Z][a-z]{2} [ 0-9][0-9] [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}' \
+    externals/nxvk/switch/build/cross/src/nouveau/vulkan/libnvk.a | sort -u | head -3 || true
 
 # 4. EmuSwitch's other emulators, bundled in the romfs as emus/<system>.nro.
 EMUS="$ROOT/dist/emuswitch-romfs/emus"

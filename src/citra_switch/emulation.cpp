@@ -281,35 +281,50 @@ void PumpReveal() {
 // ---- The loading screen --------------------------------------------------------------------
 // A game used to start as soon as its shader cache was read, with every pipeline in it still to
 // build on one background thread: until that finished it ran slowly, with pieces missing. Now
-// the pipelines are built first, behind a loading screen the game's renderer draws over the
-// black, with this thread and core 0 helping the builder (nothing else runs yet). B starts the
-// game at once and leaves the rest to build in the background.
+// the pipelines are built first, with this thread and core 0 helping the builder (nothing else
+// runs yet). With the driver's pipeline cache from the last time the game ran, that takes a
+// moment and the screen just stays black for it. Only when the driver has to compile them (the
+// game's first start after the driver changed) does a loading screen come up, which the game's
+// renderer draws over the black; B on it starts the game and leaves the rest to build in the
+// background.
 
-std::atomic<bool> s_loading_screen{false};
+std::atomic<bool> s_game_loading{false};    // the pipelines are being built: no quick menu yet
+std::atomic<bool> s_loading_visible{false}; // and the loading screen is up, saying B skips it
 std::atomic<bool> s_skip_loading{false};
 constexpr auto kLoadingFrameInterval = std::chrono::milliseconds(50);
+// How long the screen stays plain black before the loading screen comes up. A start with the
+// caches in place is done well inside it.
+constexpr auto kLoadingGrace = std::chrono::milliseconds(750);
 
 class LoadingScreen {
 public:
-    explicit LoadingScreen(Core::System& system_) : system{system_} {
+    explicit LoadingScreen(Core::System& system_)
+        : system{system_}, visible_at{std::chrono::steady_clock::now() + kLoadingGrace} {
         s_skip_loading = false;
-        s_loading_screen = true;
+        s_loading_visible = false;
+        s_game_loading = true;
     }
     ~LoadingScreen() {
         VideoCore::ClearOverlayLoading();
-        s_loading_screen = false;
+        s_loading_visible = false;
+        s_game_loading = false;
     }
     LoadingScreen(const LoadingScreen&) = delete;
     LoadingScreen& operator=(const LoadingScreen&) = delete;
 
-    // Updates what it says, and puts a frame up now and then so it moves.
+    // Updates what it says, and puts a frame up now and then so it moves. Nothing shows until
+    // the wait has gone on for kLoadingGrace.
     void Show(std::string detail, float progress) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now < visible_at) {
+            return;
+        }
         VideoCore::OverlayLoading loading;
         loading.title = "Getting the game ready";
         loading.detail = std::move(detail);
         loading.progress = progress;
         VideoCore::SetOverlayLoading(loading);
-        const auto now = std::chrono::steady_clock::now();
+        s_loading_visible = true;
         if (now >= next_frame) {
             next_frame = now + kLoadingFrameInterval;
             Core::PerfStats::game_frames_updated = true;
@@ -317,8 +332,13 @@ public:
         }
     }
 
+    bool Visible() const {
+        return s_loading_visible.load();
+    }
+
 private:
     Core::System& system;
+    std::chrono::steady_clock::time_point visible_at;
     std::chrono::steady_clock::time_point next_frame{};
 };
 
@@ -363,6 +383,13 @@ void WarmUpGraphics(Core::System& system, LoadingScreen& screen) {
                         .count();
     LOG_INFO(Frontend, "Pipelines ready in {} ms{}", ms,
              s_skip_loading ? " (skipped, the rest build while the game runs)" : "");
+    // What the driver had to compile is written to the card now, not only when the game closes,
+    // so a crash or EmuSwitch being closed can't lose it and leave the next start to compile it
+    // all again. Nothing is written when it all came from the cache.
+    if (screen.Visible()) {
+        screen.Show("Saving the graphics for next time", 1.0f);
+    }
+    rasterizer->SaveDriverCache();
 }
 
 // Turns a completed save state request into an on-screen message.
@@ -630,11 +657,15 @@ bool IsRunning() {
 }
 
 bool IsGameLoading() {
-    return s_loading_screen.load();
+    return s_game_loading.load();
 }
 
 void SkipGameLoading() {
-    s_skip_loading = true;
+    // Only once the screen saying so is up: B pressed at the moment a game starts mustn't
+    // leave it to build its graphics while it runs.
+    if (s_loading_visible) {
+        s_skip_loading = true;
+    }
 }
 
 void SetEmulationPaused(bool paused) {
