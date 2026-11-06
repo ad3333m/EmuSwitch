@@ -93,61 +93,54 @@ void GraphicsPipeline::BuildOnce() {
     }
 }
 
+bool GraphicsPipeline::ShadersPending() const {
+    return std::any_of(stages.begin(), stages.end(),
+                       [](Shader* shader) { return shader && !shader->IsDone(); });
+}
+
 bool GraphicsPipeline::TryBuild(bool wait_built, bool background) {
-    // The pipeline is currently being compiled. We can either wait for it
-    // or skip the draw.
-    if (is_pending) {
-        // Still waiting behind the shader cache's warm-up: a frame needs it now, so it goes to
-        // the front. Whichever of the two requests runs first builds it.
-        if (queued_in_background && !bumped && !IsDone()) {
-            bumped = true;
+    if (background) {
+        // The shader cache warming up: queued behind anything a frame asks for, and built by
+        // whichever thread gets to it first (see BuildQueuedPipeline).
+        if (!is_pending) {
+            is_pending = true;
             VideoCore::NotifyShaderCompileBegin();
-            worker->QueueUrgentWork([this] {
+            worker->QueueWork([this] {
                 BuildOnce();
                 VideoCore::NotifyShaderCompileEnd();
             });
         }
+        return false;
+    }
+
+    // A frame needs it now. If no thread has started on it yet, it is this one's to build, all
+    // the way: whoever claims a pipeline builds it or queues the build, so nothing that waits
+    // for it can be left waiting.
+    if (build_claimed.exchange(true)) {
+        // Being built elsewhere (the warm-up, or a build queued for an earlier draw): wait for
+        // it, or skip the draw until it's there.
         return wait_built;
     }
 
-    const auto queue_build = [this, background] {
-        VideoCore::NotifyShaderCompileBegin();
-        is_pending = true;
-        queued_in_background = background;
-        auto work = [this] {
-            BuildOnce();
-            VideoCore::NotifyShaderCompileEnd();
-        };
-        if (background) {
-            worker->QueueWork(std::move(work));
-        } else {
-            worker->QueueUrgentWork(std::move(work));
-        }
-    };
-
-#ifdef __SWITCH__
-    // Keep the driver's cache lookup off the render thread in asynchronous mode.
-    if (!wait_built) {
-        queue_build();
-        return false;
-    }
-#endif
-
-    // If the shaders haven't been compiled yet, we cannot proceed.
-    const bool shaders_pending = std::any_of(
-        stages.begin(), stages.end(), [](Shader* shader) { return shader && !shader->IsDone(); });
-    if (!wait_built && shaders_pending) {
-        return false;
-    }
-
-    // Ask the driver if it can give us the pipeline quickly.
-    if (!shaders_pending && instance.IsPipelineCreationCacheControlSupported() && Build(true)) {
+    // Straight from the driver's cache when it has it, which it does for the pipelines of a game
+    // that ran before: that only takes a moment, so the draw goes ahead with nothing missing.
+    if (!ShadersPending() && instance.IsPipelineCreationCacheControlSupported() && Build(true)) {
         return true;
     }
 
-    // Fallback to (a)synchronous compilation
-    queue_build();
-    return wait_built;
+    if (wait_built) {
+        // Compiled here and now (waiting for its shaders if need be).
+        Build();
+        return true;
+    }
+
+    // Compiled on the worker, ahead of the warm-up; the draw is skipped until it's done.
+    VideoCore::NotifyShaderCompileBegin();
+    worker->QueueUrgentWork([this] {
+        Build();
+        VideoCore::NotifyShaderCompileEnd();
+    });
+    return false;
 }
 
 bool GraphicsPipeline::Build(bool fail_on_compile_required) {

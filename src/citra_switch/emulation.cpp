@@ -254,6 +254,7 @@ void ArmReveal() {
 void FadeInsteadOfReveal(float alpha, u32 ms) {
     std::scoped_lock lock{s_reveal_mutex};
     s_reveal.armed = false;
+    VideoCore::SetWaitForPipelines(false);
     VideoCore::FadeOverlayTo(alpha, ms);
 }
 
@@ -274,75 +275,27 @@ void PumpReveal() {
                        s_reveal.whole_frames >= kRevealWholeFrames;
     if (ready || IsQuickMenuOpen() || std::chrono::steady_clock::now() >= s_reveal.deadline) {
         s_reveal.armed = false;
+        // On screen now: a draw whose pipeline has to be compiled no longer holds the game up.
+        VideoCore::SetWaitForPipelines(false);
         VideoCore::FadeOverlayTo(0.0f, kFadeInMs);
     }
 }
 
-// ---- The loading screen --------------------------------------------------------------------
+// ---- Getting the graphics ready -------------------------------------------------------------
 // A game used to start as soon as its shader cache was read, with every pipeline in it still to
-// build on one background thread: until that finished it ran slowly, with pieces missing. Now
-// the pipelines are built first, with this thread and core 0 helping the builder (nothing else
-// runs yet). With the driver's pipeline cache from the last time the game ran, that takes a
-// moment and the screen just stays black for it. Only when the driver has to compile them (the
-// game's first start after the driver changed) does a loading screen come up, which the game's
-// renderer draws over the black; B on it starts the game and leaves the rest to build in the
-// background.
+// build on one background thread and the draws that needed one skipped until then, so it ran
+// slowly with pieces missing. Now, while the screen is still black:
+// - the pipelines the cache queued are built for up to kWarmUpBudget, with this thread and
+//   core 0 helping the builder (nothing else runs yet). With the driver's cache from an earlier
+//   run that's usually all of them; whatever is left builds in the background.
+// - the game's draws wait for any pipeline that isn't built yet (VideoCore::SetWaitForPipelines),
+//   so the first frames shown are whole. Once the picture is up they no longer wait for one the
+//   driver has to compile, but still take any it has cached straight away.
 
-std::atomic<bool> s_game_loading{false};    // the pipelines are being built: no quick menu yet
-std::atomic<bool> s_loading_visible{false}; // and the loading screen is up, saying B skips it
-std::atomic<bool> s_skip_loading{false};
-constexpr auto kLoadingFrameInterval = std::chrono::milliseconds(50);
-// How long the screen stays plain black before the loading screen comes up. A start with the
-// caches in place is done well inside it.
-constexpr auto kLoadingGrace = std::chrono::milliseconds(750);
+std::atomic<bool> s_game_starting{false}; // the warm-up runs: the quick menu waits for it
+constexpr auto kWarmUpBudget = std::chrono::milliseconds(1000);
 
-class LoadingScreen {
-public:
-    explicit LoadingScreen(Core::System& system_)
-        : system{system_}, visible_at{std::chrono::steady_clock::now() + kLoadingGrace} {
-        s_skip_loading = false;
-        s_loading_visible = false;
-        s_game_loading = true;
-    }
-    ~LoadingScreen() {
-        VideoCore::ClearOverlayLoading();
-        s_loading_visible = false;
-        s_game_loading = false;
-    }
-    LoadingScreen(const LoadingScreen&) = delete;
-    LoadingScreen& operator=(const LoadingScreen&) = delete;
-
-    // Updates what it says, and puts a frame up now and then so it moves. Nothing shows until
-    // the wait has gone on for kLoadingGrace.
-    void Show(std::string detail, float progress) {
-        const auto now = std::chrono::steady_clock::now();
-        if (now < visible_at) {
-            return;
-        }
-        VideoCore::OverlayLoading loading;
-        loading.title = "Getting the game ready";
-        loading.detail = std::move(detail);
-        loading.progress = progress;
-        VideoCore::SetOverlayLoading(loading);
-        s_loading_visible = true;
-        if (now >= next_frame) {
-            next_frame = now + kLoadingFrameInterval;
-            Core::PerfStats::game_frames_updated = true;
-            system.GPU().SwapBuffers();
-        }
-    }
-
-    bool Visible() const {
-        return s_loading_visible.load();
-    }
-
-private:
-    Core::System& system;
-    std::chrono::steady_clock::time_point visible_at;
-    std::chrono::steady_clock::time_point next_frame{};
-};
-
-void WarmUpGraphics(Core::System& system, LoadingScreen& screen) {
+void WarmUpGraphics(Core::System& system) {
     VideoCore::RasterizerInterface* rasterizer = system.GPU().Renderer().Rasterizer();
     auto [done, total] = rasterizer->PipelineBuildProgress();
     if (done >= total) {
@@ -350,10 +303,10 @@ void WarmUpGraphics(Core::System& system, LoadingScreen& screen) {
     }
     const std::size_t first = done;
     const auto began = std::chrono::steady_clock::now();
-    LOG_INFO(Frontend, "Building {} pipelines from the shader cache before the game starts",
-             total - first);
+    const auto deadline = began + kWarmUpBudget;
+    s_game_starting = true;
     std::atomic<bool> finished{false};
-    // Core 0 lends a hand. Below the async GPU thread there, which keeps the screen moving.
+    // Core 0 lends a hand. Below the async GPU thread there, which has nothing to show yet.
     std::thread helper([rasterizer, &finished] {
         Common::SetCurrentThreadName("PipelineHelper");
         Common::Horizon::PinCurrentThread(Common::Horizon::CoreFrontend);
@@ -361,13 +314,9 @@ void WarmUpGraphics(Core::System& system, LoadingScreen& screen) {
         while (!finished.load(std::memory_order_relaxed) && rasterizer->BuildQueuedPipeline()) {
         }
     });
-    while (!s_stop && !s_skip_loading) {
+    while (!s_stop && std::chrono::steady_clock::now() < deadline) {
         const bool built = rasterizer->BuildQueuedPipeline();
         std::tie(done, total) = rasterizer->PipelineBuildProgress();
-        const std::size_t count = total - first;
-        const std::size_t ready = std::min(done, total) - first;
-        screen.Show(fmt::format("Building graphics: {} of {}     B  Start now", ready, count),
-                    count == 0 ? 1.0f : static_cast<float>(ready) / static_cast<float>(count));
         if (done >= total) {
             break;
         }
@@ -378,18 +327,14 @@ void WarmUpGraphics(Core::System& system, LoadingScreen& screen) {
     }
     finished = true;
     helper.join();
+    s_game_starting = false;
+    std::tie(done, total) = rasterizer->PipelineBuildProgress();
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now() - began)
                         .count();
-    LOG_INFO(Frontend, "Pipelines ready in {} ms{}", ms,
-             s_skip_loading ? " (skipped, the rest build while the game runs)" : "");
-    // What the driver had to compile is written to the card now, not only when the game closes,
-    // so a crash or EmuSwitch being closed can't lose it and leave the next start to compile it
-    // all again. Nothing is written when it all came from the cache.
-    if (screen.Visible()) {
-        screen.Show("Saving the graphics for next time", 1.0f);
-    }
-    rasterizer->SaveDriverCache();
+    LOG_INFO(Frontend, "Built {} of {} queued pipelines in {} ms before the start{}",
+             std::min(done, total) - first, total - first, ms,
+             done >= total ? "" : "; the rest build in the background");
 }
 
 // Turns a completed save state request into an on-screen message.
@@ -399,11 +344,8 @@ void ReportSaveStateEvent(Core::System& system) {
         return;
     }
     if (event->loading && event->success) {
-        // The rebuilt renderer queued its shader cache again: built before the game goes on.
-        {
-            LoadingScreen screen{system};
-            WarmUpGraphics(system, screen);
-        }
+        // The rebuilt renderer queued its shader cache again: built while the picture is black.
+        WarmUpGraphics(system);
         ArmReveal();
     } else {
         // A save only dimmed the picture (see the quick menu), and a failed load left it as it was.
@@ -474,6 +416,8 @@ void PrepareStateOperation(Core::System& system, bool loading) {
     if (loading) {
         FadeInsteadOfReveal(1.0f, kFadeOutMs);
         PresentFor(system, kFadeOutMs + 24);
+        // Black from here until the loaded game has drawn whole frames (see ReportSaveStateEvent).
+        VideoCore::SetWaitForPipelines(true);
     } else {
         VideoCore::PostOverlayToast("Saving state...", 10000);
         PresentFor(system, 40);
@@ -522,17 +466,13 @@ void EmuThread(std::string path) {
         system.GetAppLoader().ReadProgramId(program_id);
         system.GPU().ApplyPerProgramSettings(program_id);
 
-        // Load any cached disk shaders, then build them, behind the loading screen.
-        LoadingScreen screen{system};
-        system.GPU().Renderer().Rasterizer()->LoadDefaultDiskResources(
-            s_stop, [&screen](VideoCore::LoadCallbackStage stage, std::size_t value,
-                              std::size_t total, const std::string&) {
-                if (stage == VideoCore::LoadCallbackStage::Build && total > 0) {
-                    screen.Show("Reading saved shaders",
-                                static_cast<float>(value) / static_cast<float>(total));
-                }
-            });
-        WarmUpGraphics(system, screen);
+        // Load any cached disk shaders and build them while the screen is still black. Until the
+        // picture comes up, draws wait for their pipelines rather than going without.
+        VideoCore::SetWaitForPipelines(true);
+        s_game_starting = true;
+        system.GPU().Renderer().Rasterizer()->LoadDefaultDiskResources(s_stop, {});
+        WarmUpGraphics(system);
+        s_game_starting = false;
     }
 
     LOG_INFO(Frontend, "Emulation started (program id {:016X})", program_id);
@@ -656,16 +596,8 @@ bool IsRunning() {
     return !s_stop;
 }
 
-bool IsGameLoading() {
-    return s_game_loading.load();
-}
-
-void SkipGameLoading() {
-    // Only once the screen saying so is up: B pressed at the moment a game starts mustn't
-    // leave it to build its graphics while it runs.
-    if (s_loading_visible) {
-        s_skip_loading = true;
-    }
+bool IsGameStarting() {
+    return s_game_starting.load();
 }
 
 void SetEmulationPaused(bool paused) {

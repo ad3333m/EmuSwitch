@@ -241,17 +241,10 @@ void RunGame(PadState& pad, const std::string& rom) {
             // Emulator actions are edge-detected in the remappable InputButton space.
             const u64 input_pressed = state.buttons & ~prev_input;
 
-            // While the loading screen is up the game hasn't started: B starts it without
-            // waiting for the rest of its graphics, and the quick menu stays shut.
-            const bool loading = SwitchFrontend::IsGameLoading();
-            if (loading && (pressed & HidNpadButton_B) != 0) {
-                SwitchFrontend::SkipGameLoading();
-            }
-
-            // The +/- chord toggles the in-game quick menu.
+            // The +/- chord toggles the in-game quick menu, once the game has got going.
             constexpr u64 chord = HidNpadButton_Plus | HidNpadButton_Minus;
-            const bool chord_edge =
-                !loading && (held & chord) == chord && (prev_held & chord) != chord;
+            const bool chord_edge = !SwitchFrontend::IsGameStarting() && (held & chord) == chord &&
+                                    (prev_held & chord) != chord;
             if (chord_edge) {
                 SwitchFrontend::ToggleQuickMenu();
             }

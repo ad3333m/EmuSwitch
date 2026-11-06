@@ -2102,83 +2102,12 @@ OverlayDraw RendererVulkan::PrepareFade(const Layout::FramebufferLayout& layout,
     return overlay;
 }
 
-OverlayDraw RendererVulkan::PrepareLoading(const Layout::FramebufferLayout& layout, Frame* frame,
-                                           const VideoCore::OverlayLoading& loading) {
-    const OverlayCanvas canvas = MakeOverlayCanvas(layout);
-    const float w = canvas.width;
-    const float h = canvas.height;
-    if (w <= 0.0f || h <= 0.0f) {
-        return {};
-    }
-    const float em = std::max(16.0f, std::round(canvas.ShortEdge() / 28.0f));
-    const float title_scale = em * 1.3f / OverlayFont::kBakePixelHeight;
-    const float detail_scale = em * 0.8f / OverlayFont::kBakePixelHeight;
-    const float cx = w / 2.0f, cy = h / 2.0f;
-
-    std::vector<float> verts;
-    verts.reserve(2048);
-    OverlayBuilder builder{verts, canvas};
-    builder.AddRect(0.0f, 0.0f, w, h);
-    const u32 black_end = builder.VertexCount();
-
-    // The bar sits a little below the middle, the title above it and the detail under it.
-    const bool has_bar = loading.progress >= 0.0f;
-    const float bw = std::round(std::min(w * 0.46f, em * 24.0f));
-    const float bh = std::round(em * 0.42f);
-    const float bx0 = std::round(cx - bw / 2.0f), by0 = std::round(cy + em * 0.3f);
-    const float bx1 = bx0 + bw, by1 = by0 + bh;
-    if (has_bar) {
-        builder.AddRoundRect(bx0, by0, bx1, by1, bh / 2.0f);
-    }
-    const u32 track_end = builder.VertexCount();
-    if (has_bar) {
-        const float fill = std::clamp(loading.progress, 0.0f, 1.0f);
-        builder.AddRoundRect(bx0, by0, bx0 + std::max(bh, bw * fill), by1, bh / 2.0f);
-    }
-    const u32 fill_end = builder.VertexCount();
-
-    const float tw = OverlayBuilder::Measure(loading.title, title_scale);
-    builder.AddText(std::round(cx - tw / 2.0f), std::round(by0 - em * 2.6f), loading.title,
-                    title_scale);
-    const u32 title_end = builder.VertexCount();
-    const float dw = OverlayBuilder::Measure(loading.detail, detail_scale);
-    builder.AddText(std::round(cx - dw / 2.0f), std::round(by1 + em * 0.7f), loading.detail,
-                    detail_scale);
-    const u32 detail_end = builder.VertexCount();
-
-    const VideoCore::OverlayTheme theme = VideoCore::GetOverlayTheme();
-    const std::array<float, 4> accent = {theme.accent[0], theme.accent[1], theme.accent[2], 1.0f};
-    OverlayDraw overlay;
-    if (!UploadOverlayVertices(frame, verts, overlay)) {
-        return {};
-    }
-    overlay.batches.push_back({{0.0f, 0.0f, 0.0f, 1.0f}, 0, black_end});
-    if (track_end > black_end) {
-        overlay.batches.push_back({{1.0f, 1.0f, 1.0f, 0.12f}, black_end, track_end - black_end});
-    }
-    if (fill_end > track_end) {
-        overlay.batches.push_back({accent, track_end, fill_end - track_end});
-    }
-    if (title_end > fill_end) {
-        overlay.batches.push_back({kQmText, fill_end, title_end - fill_end});
-    }
-    if (detail_end > title_end) {
-        overlay.batches.push_back({kQmTextDim, title_end, detail_end - title_end});
-    }
-    return overlay;
-}
-
 OverlayDraw RendererVulkan::PrepareQuickMenu(const Layout::FramebufferLayout& layout,
                                              Frame* frame) {
     // The fade to and from black (a game closing, a state loading) goes over everything, the
     // menu included; when it's all black, nothing under it is worth building.
     const float fade = VideoCore::GetOverlayFade();
     if (fade >= 0.999f) {
-        // While a game gets ready, its loading screen goes over the black.
-        if (const VideoCore::OverlayLoading loading = VideoCore::GetOverlayLoading();
-            loading.active) {
-            return PrepareLoading(layout, frame, loading);
-        }
         return PrepareFade(layout, frame, 1.0f);
     }
     if (!VideoCore::IsOverlayMenuVisible()) {

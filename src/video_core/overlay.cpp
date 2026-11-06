@@ -114,24 +114,15 @@ u32 GetPendingShaderCompiles() {
 }
 
 namespace {
-std::mutex s_loading_mutex;
-OverlayLoading s_loading;
+std::atomic<bool> s_wait_for_pipelines{false};
 } // namespace
 
-void SetOverlayLoading(const OverlayLoading& loading) {
-    std::scoped_lock lock{s_loading_mutex};
-    s_loading = loading;
-    s_loading.active = true;
+void SetWaitForPipelines(bool wait) {
+    s_wait_for_pipelines.store(wait, std::memory_order_release);
 }
 
-void ClearOverlayLoading() {
-    std::scoped_lock lock{s_loading_mutex};
-    s_loading = {};
-}
-
-OverlayLoading GetOverlayLoading() {
-    std::scoped_lock lock{s_loading_mutex};
-    return s_loading;
+bool ShouldWaitForPipelines() {
+    return s_wait_for_pipelines.load(std::memory_order_acquire);
 }
 
 void NotePresentedFrame() {

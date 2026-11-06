@@ -323,8 +323,10 @@ public:
                               Common::ThreadWorker* worker);
     ~GraphicsPipeline();
 
-    // `background` builds (the shader cache warming up when a game starts) wait behind the ones a
-    // drawn frame needs.
+    // Called when a draw needs the pipeline and it isn't built: true when it is now, or the
+    // caller should wait for it (`wait_built`); false when the draw has to be skipped meanwhile.
+    // `background` queues the build behind the ones drawn frames need (the shader cache warming
+    // up when a game starts) and returns false.
     bool TryBuild(bool wait_built, bool background = false);
 
     bool Build(bool fail_on_compile_required = false);
@@ -342,15 +344,14 @@ private:
     vk::PipelineLayout pipeline_layout;
     vk::PipelineCache pipeline_cache;
 
-    // Builds once, whichever of its queued requests runs first.
+    // Builds it unless another thread already claimed it.
     void BuildOnce();
+    bool ShadersPending() const;
 
     PipelineInfo info;
     std::array<Shader*, 3> stages;
-    bool is_pending{};
-    // Queued behind the cache warm-up, and whether a frame has since asked for it up front.
-    bool queued_in_background{};
-    bool bumped{};
+    bool is_pending{}; // queued by the warm-up
+    // Set by the one thread that builds it, or queues its build.
     std::atomic_bool build_claimed{false};
 };
 

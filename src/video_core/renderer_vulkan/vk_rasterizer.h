@@ -53,9 +53,6 @@ public:
     std::pair<std::size_t, std::size_t> PipelineBuildProgress() const override {
         return pipeline_cache.PipelineBuildProgress();
     }
-    void SaveDriverCache() override {
-        pipeline_cache.SaveDriverPipelineDiskCache();
-    }
 
     void DrawTriangles() override;
     void FlushAll() override;

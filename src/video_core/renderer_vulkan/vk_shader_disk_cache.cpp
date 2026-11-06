@@ -1526,6 +1526,12 @@ bool ShaderDiskCache::InitPLCache(const std::atomic_bool& stop_loading,
         }
     }
 
+    // Once the warm-up is through, what the driver compiled for it is written to the card, not
+    // only when the game closes: a crash, or EmuSwitch being closed, would lose it, and the next
+    // start would compile it all again. Nothing is written when it all came from the cache.
+    PipelineCache& cache = parent;
+    parent.pipeline_workers.QueueWork([&cache] { cache.SaveDriverPipelineDiskCache(); });
+
     // Switch to append mode to receive new entries.
     return pl_cache.SwitchMode(CacheFile::CacheOpMode::APPEND);
 }

@@ -200,11 +200,9 @@ bool BootRom(const std::string& rom_arg);
 // True while the emulation thread is running.
 bool IsRunning();
 
-// Whether the game's graphics are being built before it starts (the quick menu waits for that),
-// and a way to start the game without waiting for them, which only works once the loading
-// screen saying so is up.
-bool IsGameLoading();
-void SkipGameLoading();
+// Whether the game's saved shaders are being read and built, before it starts (or goes on after a
+// state loads): the quick menu waits for that.
+bool IsGameStarting();
 
 // Freezes the guest between run loop slices, while the frontend keeps presenting the last frame.
 void SetEmulationPaused(bool paused);

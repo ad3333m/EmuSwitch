@@ -14,6 +14,7 @@
 #include "core/core.h"
 #include "core/loader/loader.h"
 #include "core/memory.h"
+#include "video_core/overlay.h"
 #include "video_core/pica/pica_core.h"
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -52,11 +53,13 @@ constexpr u64 TEXTURE_BUFFER_SIZE = 2_MiB;
 constexpr vk::BufferUsageFlags BUFFER_USAGE =
     vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndexBuffer;
 
+// While the picture is still black (a game starting, a state loading), a pipeline that isn't
+// built yet is waited for, so the frames that come up first are whole.
 bool ShouldWaitForPipelineBuild(bool async_shaders, [[maybe_unused]] u32 num_vertices) {
 #ifdef __SWITCH__
-    return !async_shaders;
+    return !async_shaders || VideoCore::ShouldWaitForPipelines();
 #else
-    return !async_shaders || num_vertices <= 6;
+    return !async_shaders || num_vertices <= 6 || VideoCore::ShouldWaitForPipelines();
 #endif
 }
 
